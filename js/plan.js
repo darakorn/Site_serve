@@ -1,0 +1,199 @@
+// Room geometry from a wall walk, and SVG floor-plan rendering.
+// A room is walked wall by wall starting at corner A heading right (east).
+// After each wall the walker turns by `turn` degrees (+ = right, − = left).
+// Walking clockwise keeps the room on the walker's right; a plain rectangle is four right turns.
+
+const VW = 400;
+const INK = '#222';
+const DIM = '#777';
+const ACC = '#1f6f5c';
+const RED = '#d93025';
+const FONT = "'Sarabun','Noto Sans Thai','Leelawadee UI',system-ui,sans-serif";
+
+export const fmtM = cm => ((+cm || 0) / 100).toFixed(2);
+export const fmtArea = cm2 => (cm2 / 10000).toFixed(2) + ' ตร.ม.';
+export const cornerName = i => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : '');
+export const normAngle = a => Math.round(((((a % 360) + 540) % 360) - 180) * 10) / 10;
+
+export function geometry(room) {
+  const pts = [{ x: 0, y: 0 }];
+  const segs = [];
+  let heading = 0;
+  room.walls.forEach((wall, i) => {
+    const len = Math.max(0, +wall.length || 0);
+    const r = (heading * Math.PI) / 180;
+    const u = { x: Math.cos(r), y: Math.sin(r) };
+    const p0 = pts[i];
+    const p1 = { x: p0.x + u.x * len, y: p0.y + u.y * len };
+    segs.push({ wall, i, p0, p1, u, len, heading });
+    pts.push(p1);
+    heading += +wall.turn || 0;
+  });
+  const end = pts[pts.length - 1];
+  const gap = Math.hypot(end.x, end.y);
+  let a2 = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    a2 += p.x * q.y - q.x * p.y;
+  }
+  return {
+    pts, segs, end, gap,
+    closed: segs.length >= 3 && gap < 1,
+    area: Math.abs(a2) / 2,
+    perimeter: segs.reduce((s, g) => s + g.len, 0),
+    cw: a2 >= 0, // clockwise on screen (y down) → room is on the right of each wall
+  };
+}
+
+const f = n => n.toFixed(1);
+const add = (p, v, k) => ({ x: p.x + v.x * k, y: p.y + v.y * k });
+const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const line = (a, b, attrs) => `<line x1="${f(a.x)}" y1="${f(a.y)}" x2="${f(b.x)}" y2="${f(b.y)}" ${attrs}/>`;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const halo = 'paint-order="stroke" stroke="#fff" stroke-width="3" stroke-linejoin="round"';
+
+function readableAngle(u) {
+  let a = (Math.atan2(u.y, u.x) * 180) / Math.PI;
+  if (a > 90) a -= 180;
+  if (a <= -90) a += 180;
+  return a;
+}
+
+/**
+ * opt: { mini, selected (wall id), photoCounts {wallId: n}, export, title, subtitle }
+ */
+export function renderPlan(room, opt = {}) {
+  const g = geometry(room);
+  const mini = !!opt.mini;
+  const svgOpen = (h, extra = '') =>
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VW} ${h}"${opt.export ? ` width="${VW}" height="${h}"` : ''} font-family="${FONT}"${extra}>`;
+  if (!g.segs.length) {
+    return `${svgOpen(120)}<text x="${VW / 2}" y="64" text-anchor="middle" fill="${DIM}" font-size="14">ยังไม่มีผนัง</text></svg>`;
+  }
+
+  const head = opt.export ? 46 : 0;
+  const pad = mini ? 10 : 56;
+  const maxH = mini ? 280 : 440;
+  const xs = g.pts.map(p => p.x), ys = g.pts.map(p => p.y);
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const bw = Math.max(Math.max(...xs) - minX, 1), bh = Math.max(Math.max(...ys) - minY, 1);
+  const s = Math.min((VW - 2 * pad) / bw, (maxH - 2 * pad) / bh);
+  const VH = Math.round(bh * s + 2 * pad + head);
+  const ox = (VW - bw * s) / 2 - minX * s, oy = pad + head - minY * s;
+  const X = p => ({ x: ox + p.x * s, y: oy + p.y * s });
+  const sign = g.cw ? 1 : -1;
+  const inward = u => ({ x: -u.y * sign, y: u.x * sign });
+  const T = mini ? 3 : 6;
+  const out = [];
+
+  if (opt.export) {
+    out.push(`<rect width="${VW}" height="${VH}" fill="#fff"/>`);
+    out.push(`<text x="14" y="26" font-size="15" font-weight="700" fill="${INK}">${esc(opt.title)}</text>`);
+    out.push(`<text x="${VW - 14}" y="26" font-size="12" text-anchor="end" fill="${DIM}">${esc(opt.subtitle)}</text>`);
+  }
+
+  const corners = g.closed ? g.pts.slice(0, -1) : g.pts;
+  const ptsAttr = corners.map(p => { const q = X(p); return `${f(q.x)},${f(q.y)}`; }).join(' ');
+  out.push(`<polygon points="${ptsAttr}" fill="#f3efe6"/>`);
+  out.push(`<${g.closed ? 'polygon' : 'polyline'} points="${ptsAttr}" fill="none" stroke="${INK}" stroke-width="${T}" stroke-linejoin="miter" stroke-linecap="square"/>`);
+
+  const sel = g.segs.find(sg => sg.wall.id === opt.selected);
+  if (sel && !mini) out.push(line(X(sel.p0), X(sel.p1), `stroke="${ACC}" stroke-width="${T}" stroke-linecap="square"`));
+
+  // Doors, windows and other openings
+  for (const sg of g.segs) {
+    const A = X(sg.p0), u = sg.u, n = inward(u);
+    for (const o of sg.wall.openings || []) {
+      const off = clamp(+o.offset || 0, 0, sg.len);
+      const w = clamp(+o.width || 0, 0, sg.len - off);
+      if (!w) continue;
+      const a = add(A, u, off * s), b = add(a, u, w * s), r = w * s;
+      out.push(line(a, b, `stroke="#fff" stroke-width="${T + 2}"`));
+      if (o.type === 'door') {
+        const leaf = add(a, n, r);
+        const sweep = n.x * u.y - n.y * u.x > 0 ? 1 : 0;
+        out.push(line(a, leaf, `stroke="${INK}" stroke-width="${mini ? 1 : 1.6}"`));
+        out.push(`<path d="M${f(leaf.x)} ${f(leaf.y)} A${f(r)} ${f(r)} 0 0 ${sweep} ${f(b.x)} ${f(b.y)}" fill="none" stroke="${INK}" stroke-width="0.8" stroke-dasharray="3 2"/>`);
+      } else if (o.type === 'window') {
+        for (const k of [-T / 2, 0, T / 2]) out.push(line(add(a, n, k), add(b, n, k), `stroke="${INK}" stroke-width="${k ? 1 : 0.6}"`));
+        for (const p of [a, b]) out.push(line(add(p, n, -T / 2), add(p, n, T / 2), `stroke="${INK}" stroke-width="1"`));
+      } else {
+        out.push(line(a, b, `stroke="${INK}" stroke-width="1.2" stroke-dasharray="4 3"`));
+      }
+      if (!mini) {
+        const m = add(mid(a, b), n, -10);
+        out.push(`<text x="${f(m.x)}" y="${f(m.y)}" transform="rotate(${f(readableAngle(u))} ${f(m.x)} ${f(m.y)})" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="${DIM}" ${halo}>${fmtM(w)}</text>`);
+      }
+    }
+  }
+
+  if (!mini) {
+    // Dimension lines outside each wall, wall numbers inside
+    for (const sg of g.segs) {
+      if (!sg.len) continue;
+      const a = X(sg.p0), b = X(sg.p1), n = inward(sg.u), o = { x: -n.x, y: -n.y };
+      const d = 24;
+      const da = add(a, o, d), db = add(b, o, d);
+      const thin = `stroke="${DIM}" stroke-width="0.7"`;
+      out.push(line(add(a, o, 6), add(a, o, d + 4), thin), line(add(b, o, 6), add(b, o, d + 4), thin), line(da, db, thin));
+      for (const p of [da, db]) out.push(line(add(add(p, sg.u, -3), o, 3), add(add(p, sg.u, 3), o, -3), `stroke="${INK}" stroke-width="1.2"`));
+      const t = add(mid(da, db), o, 8);
+      out.push(`<text x="${f(t.x)}" y="${f(t.y)}" transform="rotate(${f(readableAngle(sg.u))} ${f(t.x)} ${f(t.y)})" text-anchor="middle" dominant-baseline="middle" font-size="12" font-weight="600" fill="${INK}" ${halo}>${fmtM(sg.len)}</text>`);
+
+      const isSel = sel === sg;
+      const c = add(mid(a, b), n, 18);
+      out.push(`<circle cx="${f(c.x)}" cy="${f(c.y)}" r="9" fill="${isSel ? ACC : '#fff'}" stroke="${isSel ? ACC : DIM}"/>`);
+      out.push(`<text x="${f(c.x)}" y="${f(c.y)}" text-anchor="middle" dominant-baseline="central" font-size="10" font-weight="700" fill="${isSel ? '#fff' : INK}">${sg.i + 1}</text>`);
+      const cnt = opt.photoCounts?.[sg.wall.id];
+      if (cnt) {
+        const pc = add(c, n, 15);
+        out.push(`<text x="${f(pc.x)}" y="${f(pc.y)}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="${DIM}">📷${cnt}</text>`);
+      }
+    }
+
+    // Corner letters
+    corners.forEach((p, i) => {
+      const prev = g.segs[i - 1] ?? (g.closed ? g.segs[g.segs.length - 1] : null);
+      const next = g.segs[i];
+      let v = { x: 0, y: 0 };
+      for (const sg of [prev, next]) if (sg) { const n = inward(sg.u); v.x -= n.x; v.y -= n.y; }
+      const k = Math.hypot(v.x, v.y) || 1;
+      const q = add(X(p), { x: v.x / k, y: v.y / k }, 13);
+      out.push(`<text x="${f(q.x)}" y="${f(q.y)}" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="700" fill="${ACC}" ${halo}>${cornerName(i)}</text>`);
+    });
+
+    if (g.segs.length >= 2 && g.gap >= 1) {
+      const a = X(g.end), b = X(g.pts[0]), m = mid(a, b);
+      out.push(line(a, b, `stroke="${RED}" stroke-width="1.5" stroke-dasharray="5 4"`));
+      out.push(`<text x="${f(m.x)}" y="${f(m.y)}" text-anchor="middle" dominant-baseline="central" font-size="11" fill="${RED}" ${halo}>ห่าง ${Math.round(g.gap)} ซม.</text>`);
+    }
+
+    if (!opt.export) {
+      for (const sg of g.segs) {
+        out.push(line(X(sg.p0), X(sg.p1), `stroke="#000" stroke-opacity="0" stroke-width="30" data-wall="${sg.wall.id}" style="cursor:pointer"`));
+      }
+    }
+  }
+
+  return `${svgOpen(VH)}${out.join('')}</svg>`;
+}
+
+export function svgToPng(svg, scale = 3) {
+  const [, w, h] = svg.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/).map(Number);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = w * scale;
+      c.height = h * scale;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(resolve, 'image/png');
+    };
+    img.onerror = reject;
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  });
+}

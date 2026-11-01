@@ -1,0 +1,10 @@
+{
+  "name": "สำรวจหน้างาน",
+  "short_name": "สำรวจ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f2f4f3",
+  "theme_color": "#1f6f5c",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
