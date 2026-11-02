@@ -1,5 +1,5 @@
 // Network-first with cache fallback, so the app opens offline on site.
-const CACHE = 'site-survey-v1';
+const CACHE = 'site-survey-v2';
 const SHELL = ['./', './index.html', './css/app.css', './js/app.js', './js/db.js', './js/plan.js', './js/annotate.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
