@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.9';
+const APP_VERSION = '1.0.10';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -37,9 +37,49 @@ const imgCache = new Map(); // `${photoId}@${size}` → Promise<dataURL>
 const zooms = new Map();    // room id → plan zoom { k, x, y }
 const zoomOf = id => zooms.get(id) || zooms.set(id, newZoom()).get(id);
 
+// ---------- undo / redo (the open room only) ----------
+// Every save() of a room records its previous state. Typing in one field folds into one step
+// (save(fieldKey) within a second of the last keystroke there). Photos aren't part of it: undoing a wall delete brings the wall
+// back but its photos stay on the room overview.
+const UNDO_MAX = 50, MERGE_MS = 1000;
+let hist = { roomId: null, past: [], future: [], last: null, at: 0, key: null };
+function trackRoom(key = null) {
+  const room = view.name === 'room' && curRoom();
+  if (!room) return;
+  const now = JSON.stringify(room);
+  if (hist.roomId !== room.id) { hist = { roomId: room.id, past: [], future: [], last: now, at: 0 }; return; }
+  if (now === hist.last) return;
+  if (!key || key !== hist.key || Date.now() - hist.at > MERGE_MS) {
+    hist.past.push(hist.last);
+    if (hist.past.length > UNDO_MAX) hist.past.shift();
+  }
+  hist.future = [];
+  hist.last = now;
+  hist.at = Date.now();
+  hist.key = key;
+}
+async function undoRedo(back) {
+  const room = curRoom();
+  const from = back ? hist.past : hist.future, to = back ? hist.future : hist.past;
+  if (!room || hist.roomId !== room.id || !from.length) return;
+  to.push(hist.last);
+  hist.last = from.pop();
+  hist.at = 0;
+  hist.key = null;
+  const state = JSON.parse(hist.last);
+  for (const k of Object.keys(room)) delete room[k];
+  Object.assign(room, state);
+  persist();
+  await rerender();
+}
+
 // ---------- persistence ----------
 let saveTimer;
-function save() {
+function save(fieldKey) {
+  trackRoom(fieldKey);
+  persist();
+}
+function persist() {
   P.updatedAt = Date.now();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => db.putProject(P), 300);
@@ -86,6 +126,7 @@ async function route() {
       if (!P.rooms.some(r => r.id === rid)) { location.hash = `#/p/${id}`; return; }
       if (view.roomId !== rid) selectedWall = null;
       view = { name: 'room', roomId: rid };
+      trackRoom(); // starts a fresh history when the room changes
     } else {
       view = { name: b === 'report' ? 'report' : 'project' };
     }
@@ -219,6 +260,8 @@ function refreshPlan() {
   const pl = document.getElementById('plan'), sm = document.getElementById('summary');
   if (pl) { pl.innerHTML = planSvg(room); applyZoom(pl, zoomOf(room.id)); }
   if (sm) sm.innerHTML = summaryHtml(room);
+  const bar = document.querySelector('.draw-bar');
+  if (bar) bar.innerHTML = drawBar(); // undo / redo availability
 }
 
 function kindRow(o, at, autoTag) {
@@ -382,8 +425,10 @@ function handlesFor(room) {
 const PLAN_TOOLS = { edit: '✋ ย้าย/ยืด', wall: '🧱 ผนัง', line: '╱ เส้น', rect: '▭ สี่เหลี่ยม', circle: '◯ วงกลม' };
 
 function drawBar() {
-  if (!planTool) return '<button class="btn sm" data-act="tool" data-tool="edit">✏️ แก้ไข / วาดในแปลน</button>';
-  return `${Object.entries(PLAN_TOOLS).map(([k, l]) => `<button class="btn sm${planTool === k ? ' on' : ''}" data-act="tool" data-tool="${k}">${l}</button>`).join('')}
+  const undo = `<button class="btn sm icon-btn" data-act="undo" aria-label="ย้อนกลับ"${hist.past.length ? '' : ' disabled'}>↶</button>
+    <button class="btn sm icon-btn" data-act="redo" aria-label="ทำซ้ำ"${hist.future.length ? '' : ' disabled'}>↷</button>`;
+  if (!planTool) return `${undo}<button class="btn sm" data-act="tool" data-tool="edit">✏️ แก้ไข / วาดในแปลน</button>`;
+  return `${undo}${Object.entries(PLAN_TOOLS).map(([k, l]) => `<button class="btn sm${planTool === k ? ' on' : ''}" data-act="tool" data-tool="${k}">${l}</button>`).join('')}
     <button class="btn sm${snapOn ? ' on' : ''}" data-act="snap" aria-pressed="${snapOn}">🧲 Snap</button>
     <button class="btn sm primary" data-act="tool-off">เสร็จ</button>
     <small class="tool-hint">${{
@@ -416,6 +461,7 @@ function viewRoom() {
     <div id="walls">${room.walls.map((w, i) => wallCard(room, w, i)).join('')}</div>
     <button class="btn primary block" data-act="add-wall">+ เพิ่มผนัง</button>
     ${shapesCard(room)}
+    <button class="btn block" data-act="copy-room">⧉ คัดลอกห้องนี้</button>
     <button class="btn ghost danger block" data-act="delete-room">ลบห้องนี้</button>
   </main>`;
   const box = document.getElementById('plan');
@@ -745,6 +791,25 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'open-wall': await selectWall(w.id, true); break;
+    case 'copy-room': {
+      // Same walls, openings, columns and shapes under new ids (photos stay with the original).
+      const ids = new Map(), fresh = id => (id ? ids.get(id) || ids.set(id, uid()).get(id) : id);
+      const copy = JSON.parse(JSON.stringify(room));
+      copy.id = uid();
+      copy.name = `${room.name} (สำเนา)`;
+      for (const w of copy.walls) {
+        w.id = fresh(w.id);
+        for (const o of w.openings || []) { o.id = fresh(o.id); if (o.ref) o.ref = fresh(o.ref); }
+        for (const c of w.columns || []) c.id = fresh(c.id);
+      }
+      for (const sh of copy.shapes || []) sh.id = fresh(sh.id);
+      P.rooms.splice(P.rooms.indexOf(room) + 1, 0, copy);
+      save();
+      location.hash = `#/p/${P.id}/r/${copy.id}`;
+      break;
+    }
+    case 'undo': await undoRedo(true); break;
+    case 'redo': await undoRedo(false); break;
     case 'tool': planTool = t.dataset.tool; preview = {}; await rerender(); break;
     case 'tool-off': planTool = null; preview = {}; await rerender(); break;
     case 'snap':
@@ -848,7 +913,7 @@ $app.addEventListener('input', e => {
     else { delete target.ref; delete target.refGap; }
   }
   if (scope === 'op') resolveRefs(w);
-  save();
+  save(`${key}:${el.dataset.w || ''}:${el.dataset.o || el.dataset.c || el.dataset.s || ''}`);
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
   if ((scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();
   else if (view.name === 'room') refreshPlan();
