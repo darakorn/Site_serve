@@ -2,9 +2,10 @@ import { db } from './db.js';
 import { geometry, renderPlan, svgToPng, fmtM, fmtArea, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
+import { newZoom, applyZoom, attachZoom } from './zoom.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -24,6 +25,8 @@ let photos = new Map();   // photo id → record for P
 let view = { name: 'home' };
 let selectedWall = null;
 const imgCache = new Map(); // `${photoId}@${size}` → Promise<dataURL>
+const zooms = new Map();    // room id → plan zoom { k, x, y }
+const zoomOf = id => zooms.get(id) || zooms.set(id, newZoom()).get(id);
 
 // ---------- persistence ----------
 let saveTimer;
@@ -197,7 +200,7 @@ function refreshPlan() {
   const room = curRoom();
   if (!room) return;
   const pl = document.getElementById('plan'), sm = document.getElementById('summary');
-  if (pl) pl.innerHTML = planSvg(room);
+  if (pl) { pl.innerHTML = planSvg(room); applyZoom(pl, zoomOf(room.id)); }
   if (sm) sm.innerHTML = summaryHtml(room);
 }
 
@@ -256,7 +259,10 @@ function viewRoom() {
   $app.innerHTML = `${bar(`#/p/${P.id}`, room.name, '<button class="btn sm" data-act="export-png">PNG</button><button class="btn sm" data-act="export-dxf">DXF</button>')}
   <main>
     <section class="plan-wrap">
-      <div id="plan" class="plan">${planSvg(room)}</div>
+      <div class="plan-box">
+        <div id="plan" class="plan">${planSvg(room)}</div>
+        <button class="btn sm zoom-reset" data-act="zoom-reset" aria-label="ย่อกลับ">⤢ ย่อกลับ</button>
+      </div>
       <div id="summary" class="summary">${summaryHtml(room)}</div>
     </section>
     <section class="card">
@@ -270,6 +276,7 @@ function viewRoom() {
     <button class="btn primary block" data-act="add-wall">+ เพิ่มผนัง</button>
     <button class="btn ghost danger block" data-act="delete-room">ลบห้องนี้</button>
   </main>`;
+  attachZoom(document.getElementById('plan'), zoomOf(room.id));
   return hydrateImages();
 }
 
@@ -494,6 +501,7 @@ $app.addEventListener('click', async e => {
     case 'close-room': closeRoom(room); save(); rerender(); break;
     case 'open-photo': openPhoto(t.dataset.ph); break;
     case 'export-png': exportPng(room); break;
+    case 'zoom-reset': { const z = zoomOf(room.id); z.k = 1; applyZoom(document.getElementById('plan'), z); break; }
     case 'export-dxf': exportDxf([room], `${fileSafe(P.name)}-${fileSafe(room.name)}`); break;
     case 'export-dxf-all': exportDxf(P.rooms, fileSafe(P.name)); break;
     case 'print': print(); break;

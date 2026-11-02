@@ -30,6 +30,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Only the room plan zooms (js/zoom.js); the page itself does not pinch-zoom. */
+html { touch-action: pan-x pan-y; }
 html, body {
   margin: 0;
   background: var(--bg);
@@ -94,7 +96,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
   margin: -12px -16px 0; padding: 10px 16px 8px;
   background: var(--bg); border-bottom: 1px solid var(--line);
 }
-.plan { display: flex; justify-content: center; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+.plan { display: flex; justify-content: center; overflow: hidden; touch-action: none; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+.plan-box { position: relative; }
+.zoom-reset { position: absolute; right: 8px; bottom: 8px; display: none; background: var(--card); box-shadow: 0 1px 4px rgb(0 0 0 / .2); }
+.plan-box.zoomed .zoom-reset { display: inline-flex; }
 .plan svg { display: block; width: 100%; max-height: 36vh; }
 .summary { display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 6px 2px 0; font-size: 13px; color: var(--muted); }
 .summary b { color: var(--ink); }
