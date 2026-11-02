@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.12';
+const APP_VERSION = '1.0.13';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -317,10 +317,12 @@ function openingRow(w, o) {
     ${before.length ? `<label class="field op-ref"><span>วัดระยะจาก</span><select data-f="op.ref" ${at}>
       <option value="">มุม ${cornerName(idx)}</option>
       ${before.map(x => `<option value="${x.id}"${ref === x ? ' selected' : ''}>ขอบหลัง ${esc(opName(tags, x))}</option>`).join('')}</select></label>` : ''}
-    ${ref ? lenField(`ห่างจาก ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
-    ${lenField('กว้าง', 'op.width', o.width, at)}
-    ${lenField('สูง', 'op.height', o.height, at)}
-    ${o.type === 'window' ? lenField('สูงจากพื้น', 'op.sill', o.sill, at) : ''}
+    <div class="op-f">
+      ${ref ? lenField(`ห่างจาก ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
+      ${lenField('กว้าง', 'op.width', o.width, at)}
+      ${lenField('สูง', 'op.height', o.height, at)}
+      ${o.type === 'window' ? lenField('สูงจากพื้น', 'op.sill', o.sill, at) : ''}
+    </div>
   </div>`;
 }
 

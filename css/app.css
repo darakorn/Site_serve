@@ -142,6 +142,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 }
 .op select { grid-column: 1 / 4; }
 .op .field { margin: 4px 0 2px; }
+/* Each row of the door / window card spans the card; the measurements sit in their own grid. */
+.op .op-ref { grid-column: 1 / -1; }
+.op-f { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 6px; align-items: end; }
 .op.col > b { grid-column: 1 / 4; align-self: center; }
 .col-f { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 0 6px; }
 .op-kind { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
