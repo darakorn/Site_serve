@@ -114,6 +114,13 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 .wall.sel { border-color: var(--acc); box-shadow: inset 0 0 0 1px var(--acc); }
 .wall-head { display: flex; align-items: center; gap: 8px; }
 .wall-head small { flex: 1; }
+.walls-bar { display: flex; align-items: center; justify-content: space-between; margin: 16px 2px 8px; }
+.mini-wall { padding: 0; }
+.wall-open { width: 100%; padding: 12px 14px; font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; }
+.wall-open small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.wall-open .chev { font-size: 22px; color: var(--muted); }
+.op.picked { box-shadow: 0 0 0 2px var(--acc); }
+.row.bulge { align-items: end; }
 .badge {
   display: grid; place-items: center; width: 26px; height: 26px; flex: none;
   border-radius: 50%; background: var(--acc); color: var(--acc-ink); font-size: 13px; font-weight: 700;
@@ -126,7 +133,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 .op .field { margin: 4px 0 2px; }
 .op.col > b { grid-column: 1 / 4; align-self: center; }
 .col-f { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 0 6px; }
-.op-kind { grid-column: 1 / -1; display: flex; gap: 6px; margin-top: 6px; }
+.op-kind { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.op-kind .op-tag { flex: 0 0 64px; width: 64px; font-weight: 700; text-align: center; background: var(--card); }
 .op-kind select { flex: 1; min-width: 0; }
 .op input, .op select { background: var(--card); }
 .btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }

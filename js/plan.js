@@ -51,6 +51,7 @@ export function openStyle(o) {
 /**
  * Plan symbol of a door or window as lines and quarter arcs, in any coordinate space.
  * a: start point on the wall line, u: unit along the wall, n: unit into the room,
+ * (o.swing === 'out' opens a swing door away from the room),
  * w: opening width, t: symbol depth (wall thickness), mid: offset of the frame centre along n.
  * Returns [{ line: [p, q], dash }, { arc: { c, from, to }, dash }].
  */
@@ -82,7 +83,7 @@ export function openingShapes(o, a, u, n, w, t, mid = 0) {
   };
 
   if (o.type === 'door') {
-    if (style === 'swing') swing(1, false);
+    if (style === 'swing') swing(o.swing === 'out' ? -1 : 1, false);
     else if (style === 'double') { swing(1, false); swing(-1, true); }
     else panels(t / 4);
     return out;
@@ -115,6 +116,20 @@ export function openingShapes(o, a, u, n, w, t, mid = 0) {
   return out;
 }
 
+// Door and window tags (D1, D2…, W1, W2…) numbered in wall order through the room, unless the
+// opening has its own `tag`. Returns Map opening id → tag.
+export function openingTags(room) {
+  const tags = new Map(), count = { door: 0, window: 0 };
+  for (const w of room.walls) {
+    for (const o of w.openings || []) {
+      if (!(o.type in count)) continue;
+      count[o.type]++;
+      tags.set(o.id, String(o.tag || '').trim() || `${o.type === 'door' ? 'D' : 'W'}${count[o.type]}`);
+    }
+  }
+  return tags;
+}
+
 // Points along a wall (cm from its start corner) where doors, windows and openings begin and end,
 // for a chain dimension. null when the wall has none.
 export function chainBreaks(sg) {
@@ -128,14 +143,30 @@ export function chainBreaks(sg) {
 }
 
 // Column footprint in plan cm: `offset` along the wall from its start corner, `gap` out from the
-// wall into the room, `width` along the wall and `depth` into the room.
-export function columnCorners(sg, c, inward) {
-  const n = inward(sg.u), w = Math.max(0, +c.width || 0), d = Math.max(0, +c.depth || 0);
+// wall into the room, `width` along the wall and `depth` into the room. A round column
+// (shape 'round') has diameter `width`. Returns { round: { c, r } } or { corners: [4 points] }.
+export function columnShape(sg, c) {
+  const w = Math.max(0, +c.width || 0), d = c.shape === 'round' ? w : Math.max(0, +c.depth || 0);
   if (!w || !d) return null;
-  const p = add(add(sg.p0, sg.u, Math.max(0, +c.offset || 0)), n, Math.max(0, +c.gap || 0));
-  return [p, add(p, sg.u, w), add(add(p, sg.u, w), n, d), add(p, n, d)];
+  const { p: base, t, n } = segPoint(sg, clamp(+c.offset || 0, 0, sg.len));
+  const p = add(base, n, Math.max(0, +c.gap || 0));
+  if (c.shape === 'round') return { round: { c: add(add(p, t, w / 2), n, w / 2), r: w / 2 } };
+  return { corners: [p, add(p, t, w), add(add(p, t, w), n, d), add(p, n, d)] };
 }
 export const inwardFor = cw => u => (cw ? { x: -u.y, y: u.x } : { x: u.y, y: -u.x });
+
+// Point on a wall at `x` cm along its chord (straight line from corner to corner), with the unit
+// tangent `t` and the unit normal `n` into the room there. Straight walls: t = u everywhere.
+export function segPoint(sg, x) {
+  const { arc } = sg;
+  if (!arc) return { p: add(sg.p0, sg.u, x), t: sg.u, n: sg.inward };
+  const X = x - sg.len / 2, root = Math.sqrt(Math.max(0, arc.r * arc.r - X * X));
+  const y = arc.sign * (root - (arc.r - Math.abs(arc.h)));
+  const slope = root ? (-arc.sign * X) / root : 0;
+  const tv = add(sg.u, arc.out, slope), k = Math.hypot(tv.x, tv.y);
+  const t = { x: tv.x / k, y: tv.y / k };
+  return { p: add(add(sg.p0, sg.u, x), arc.out, y), t, n: sg.inwardOf(t) };
+}
 
 export function geometry(room) {
   const pts = [{ x: 0, y: 0 }];
@@ -158,13 +189,43 @@ export function geometry(room) {
     const p = pts[i], q = pts[(i + 1) % pts.length];
     a2 += p.x * q.y - q.x * p.y;
   }
-  return {
-    pts, segs, end, gap,
-    closed: segs.length >= 3 && gap < 1,
-    area: Math.abs(a2) / 2,
-    perimeter: segs.reduce((s, g) => s + g.len, 0),
-    cw: a2 >= 0, // clockwise on screen (y down) → room is on the right of each wall
-  };
+  const cw = a2 >= 0; // clockwise on screen (y down) → room is on the right of each wall
+  const inwardOf = inwardFor(cw);
+  let area = Math.abs(a2) / 2, perimeter = 0;
+
+  // Curved walls: `bulge` is how far the middle of the wall bows out from the straight line
+  // between its corners (+ away from the room, − into it), up to a half circle.
+  for (const sg of segs) {
+    sg.inwardOf = inwardOf;
+    sg.inward = inwardOf(sg.u);
+    const h = clamp(+sg.wall.bulge || 0, -sg.len / 2, sg.len / 2);
+    if (Math.abs(h) < 0.5 || !sg.len) { perimeter += sg.len; continue; }
+    const c = sg.len, r = (c * c / 4 + h * h) / (2 * Math.abs(h));
+    const out = { x: -sg.inward.x, y: -sg.inward.y }, sign = Math.sign(h);
+    const m = mid(sg.p0, sg.p1);
+    sg.arc = { h, r, sign, out, apex: add(m, out, h), center: add(m, out, h - sign * r) };
+    const half = Math.asin(Math.min(1, c / (2 * r)));
+    perimeter += 2 * r * half;
+    // Circular segment between chord and arc: added when the wall bows out, removed when it bows in.
+    area += sign * (r * r * half - (c / 2) * (r - Math.abs(h)));
+  }
+  // Corners plus the tip of each curved wall: what the plan has to fit.
+  const extent = [...pts, ...segs.filter(sg => sg.arc).map(sg => sg.arc.apex)];
+  return { pts, segs, end, gap, closed: segs.length >= 3 && gap < 1, area, perimeter, cw, extent };
+}
+
+// SVG path through the room's corners, with arcs for curved walls. X maps plan → SVG.
+export function wallPath(g, X, segs = g.segs, close = g.closed) {
+  if (!segs.length) return '';
+  let d = `M${f(X(segs[0].p0).x)} ${f(X(segs[0].p0).y)}`;
+  for (const sg of segs) {
+    const b = X(sg.p1);
+    if (!sg.arc) { d += ` L${f(b.x)} ${f(b.y)}`; continue; }
+    const a = X(sg.p0), m = X(sg.arc.apex), r = Math.hypot(X(sg.arc.center).x - a.x, X(sg.arc.center).y - a.y);
+    const sweep = (m.x - a.x) * (b.y - m.y) - (m.y - a.y) * (b.x - m.x) > 0 ? 1 : 0;
+    d += ` A${f(r)} ${f(r)} 0 0 ${sweep} ${f(b.x)} ${f(b.y)}`;
+  }
+  return close ? d + ' Z' : d;
 }
 
 const f = n => n.toFixed(2);
@@ -182,7 +243,7 @@ function readableAngle(u) {
 }
 
 /**
- * opt: { mini, selected (wall id), photoCounts {wallId: n}, export, title, subtitle, unit,
+ * opt: { mini, selected (wall id), selectedOp (opening id), photoCounts {wallId: n}, export, title, subtitle, unit,
  *        zoom (CSS zoom the SVG is shown at: strokes, text and offsets shrink by it so they keep
  *        their on-screen size while the walls grow) }
  */
@@ -198,7 +259,7 @@ export function renderPlan(room, opt = {}) {
   const head = opt.export ? 46 : 0;
   const pad = mini ? 10 : 56;
   const maxH = mini ? 280 : 440;
-  const xs = g.pts.map(p => p.x), ys = g.pts.map(p => p.y);
+  const xs = g.extent.map(p => p.x), ys = g.extent.map(p => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   const bw = Math.max(Math.max(...xs) - minX, 1), bh = Math.max(Math.max(...ys) - minY, 1);
   const s = Math.min((VW - 2 * pad) / bw, (maxH - 2 * pad) / bh);
@@ -220,22 +281,25 @@ export function renderPlan(room, opt = {}) {
   }
 
   const corners = g.closed ? g.pts.slice(0, -1) : g.pts;
-  const ptsAttr = corners.map(p => { const q = X(p); return `${f(q.x)},${f(q.y)}`; }).join(' ');
-  out.push(`<polygon points="${ptsAttr}" fill="#f3efe6"/>`);
-  out.push(`<${g.closed ? 'polygon' : 'polyline'} points="${ptsAttr}" fill="none" stroke="${INK}" stroke-width="${f(T)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
+  out.push(`<path d="${wallPath(g, X, g.segs, true)}" fill="#f3efe6"/>`);
+  out.push(`<path d="${wallPath(g, X)}" fill="none" stroke="${INK}" stroke-width="${f(T)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
 
   const sel = g.segs.find(sg => sg.wall.id === opt.selected);
-  if (sel && !mini) out.push(line(X(sel.p0), X(sel.p1), `stroke="${ACC}" stroke-width="${f(T)}" stroke-linecap="square"`));
+  if (sel && !mini) out.push(`<path d="${wallPath(g, X, [sel], false)}" fill="none" stroke="${ACC}" stroke-width="${f(T)}" stroke-linecap="square"/>`);
 
   // Doors, windows and other openings
+  // On a curved wall each opening is drawn straight between its two ends on the arc.
+  const hits = [], tagSpots = [], tags = openingTags(room);
   for (const sg of g.segs) {
-    const A = X(sg.p0), u = sg.u, n = inward(u);
     for (const o of sg.wall.openings || []) {
       const off = clamp(+o.offset || 0, 0, sg.len);
       const w = clamp(+o.width || 0, 0, sg.len - off);
       if (!w) continue;
-      const a = add(A, u, off * s), b = add(a, u, w * s), r = w * s;
+      const a = X(segPoint(sg, off).p), b = X(segPoint(sg, off + w).p), r = Math.hypot(b.x - a.x, b.y - a.y);
+      const u = { x: (b.x - a.x) / r, y: (b.y - a.y) / r }, n = inward(u);
       out.push(line(a, b, `stroke="#fff" stroke-width="${f(T + Z(2))}"`));
+      if (tags.has(o.id)) tagSpots.push({ p: add(mid(a, b), n, Z(o.type === 'door' ? 12 : 10)), tag: tags.get(o.id), sel: o.id === opt.selectedOp });
+      if (!mini && !opt.export) hits.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(22))}" data-wall="${sg.wall.id}" data-op="${o.id}" style="cursor:pointer"`));
       if (o.type === 'door' || o.type === 'window') {
         const solid = Z(o.type === 'door' ? (mini ? 1 : 1.6) : 1);
         for (const sh of openingShapes(o, a, u, n, r, T)) {
@@ -254,11 +318,14 @@ export function renderPlan(room, opt = {}) {
   }
 
   // Columns
-  const inPlan = inwardFor(g.cw);
   for (const sg of g.segs) {
     for (const c of sg.wall.columns || []) {
-      const q = columnCorners(sg, c, inPlan);
-      if (q) out.push(`<polygon points="${q.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" fill="#555" stroke="${INK}" stroke-width="${f(Z(1))}"/>`);
+      const sh = columnShape(sg, c);
+      if (!sh) continue;
+      const tag = !mini && !opt.export ? ` data-wall="${sg.wall.id}" data-col="${c.id}" style="cursor:pointer"` : '';
+      const look = `fill="#555" stroke="${INK}" stroke-width="${f(Z(1))}"${tag}`;
+      if (sh.round) { const q = X(sh.round.c); out.push(`<circle cx="${f(q.x)}" cy="${f(q.y)}" r="${f(Math.max(sh.round.r * s, Z(1.5)))}" ${look}/>`); }
+      else out.push(`<polygon points="${sh.corners.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" ${look}/>`);
     }
   }
 
@@ -285,7 +352,8 @@ export function renderPlan(room, opt = {}) {
       const a = X(sg.p0), b = X(sg.p1), n = inward(sg.u), o = { x: -n.x, y: -n.y };
       const ang = readableAngle(sg.u), lenStr = fmtLen(sg.len, opt.unit), px = sg.len * s;
       const isSel = sel === sg;
-      const c = add(mid(a, b), n, Z(18)), r = Z(9);
+      const m = segPoint(sg, sg.len / 2), c = add(X(m.p), m.n, Z(18)), r = Z(9);
+      if (sg.arc) text(3.5, add(c, m.n, Z(18)), `R ${fmtLen(sg.arc.r, opt.unit)}`, 9, 0, `fill="${DIM}" ${halo}`);
       if (px >= Z(14) || isSel) label(isSel ? 0 : 4, c, 2 * r, 2 * r, 0,
         `<circle cx="${f(c.x)}" cy="${f(c.y)}" r="${f(r)}" fill="${isSel ? ACC : '#fff'}" stroke="${isSel ? ACC : DIM}" stroke-width="${f(Z(1))}"/>` +
         `<text x="${f(c.x)}" y="${f(c.y)}" text-anchor="middle" dominant-baseline="central" font-size="${f(Z(10))}" font-weight="700" fill="${isSel ? '#fff' : INK}">${sg.i + 1}</text>`);
@@ -296,7 +364,9 @@ export function renderPlan(room, opt = {}) {
       if (px < lenStr.length * Z(12) * 0.6 + Z(8)) continue;
       const tick = p => out.push(line(add(add(p, sg.u, -Z(3)), o, Z(3)), add(add(p, sg.u, Z(3)), o, -Z(3)), `stroke="${INK}" stroke-width="${f(Z(1.2))}"`));
       // Chain dimension: corner, each door/window edge, corner. The overall length moves out a row.
-      const breaks = chainBreaks(sg), dc = Z(22), d = Z(breaks ? 40 : 24);
+      // Dimensions run along the chord; a wall bowing outward pushes them past its arc.
+      const push = sg.arc?.sign > 0 ? Math.abs(sg.arc.h) * s : 0;
+      const breaks = chainBreaks(sg), dc = Z(22) + push, d = Z(breaks ? 40 : 24) + push;
       if (breaks) {
         const at = v => add(a, sg.u, v * s);
         out.push(line(add(at(0), o, dc), add(at(sg.len), o, dc), thin));
@@ -318,6 +388,14 @@ export function renderPlan(room, opt = {}) {
       text(1 + 1 / (1 + sg.len), add(mid(da, db), o, Z(8)), lenStr, 12, ang, `font-weight="600" fill="${INK}" ${halo}`);
     }
 
+    // Door / window tags in a small box just inside the wall
+    for (const { p, tag, sel: on } of tagSpots) {
+      const fs = Z(9), w = tag.length * fs * 0.62 + Z(6), h = fs * 1.5;
+      label(on ? 0 : 2.5, p, w, h, 0,
+        `<rect x="${f(p.x - w / 2)}" y="${f(p.y - h / 2)}" width="${f(w)}" height="${f(h)}" rx="${f(Z(3))}" fill="${on ? ACC : '#fff'}" stroke="${on ? ACC : INK}" stroke-width="${f(Z(0.8))}"/>` +
+        `<text x="${f(p.x)}" y="${f(p.y)}" text-anchor="middle" dominant-baseline="central" font-size="${f(fs)}" font-weight="700" fill="${on ? '#fff' : INK}">${esc(tag)}</text>`);
+    }
+
     // Corner letters
     corners.forEach((p, i) => {
       const prev = g.segs[i - 1] ?? (g.closed ? g.segs[g.segs.length - 1] : null);
@@ -335,17 +413,19 @@ export function renderPlan(room, opt = {}) {
     }
 
     const placed = [], gapPx = Z(1);
-    const hits = (p, q) => p[0] < q[2] + gapPx && q[0] < p[2] + gapPx && p[1] < q[3] + gapPx && q[1] < p[3] + gapPx;
+    const overlaps = (p, q) => p[0] < q[2] + gapPx && q[0] < p[2] + gapPx && p[1] < q[3] + gapPx && q[1] < p[3] + gapPx;
     for (const l of labels.sort((x, y) => x.prio - y.prio)) {
-      if (l.prio > 0 && placed.some(q => hits(l.box, q))) continue;
+      if (l.prio > 0 && placed.some(q => overlaps(l.box, q))) continue;
       placed.push(l.box);
       out.push(l.svg);
     }
 
     if (!opt.export) {
       for (const sg of g.segs) {
-        out.push(line(X(sg.p0), X(sg.p1), `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(30))}" data-wall="${sg.wall.id}" style="cursor:pointer"`));
+        out.push(`<path d="${wallPath(g, X, [sg], false)}" fill="none" stroke="#000" stroke-opacity="0" stroke-width="${f(Z(30))}" data-wall="${sg.wall.id}" style="cursor:pointer"/>`);
       }
+      // Doors and windows on top of the wall targets, so a tap picks the opening itself.
+      out.push(...hits);
     }
   }
 

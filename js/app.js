@@ -1,11 +1,11 @@
 import { db } from './db.js';
-import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle } from './plan.js';
+import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.0.7';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -24,6 +24,10 @@ let P = null;             // project being edited
 let photos = new Map();   // photo id → record for P
 let view = { name: 'home' };
 let selectedWall = null;
+let selectedOp = null;    // door/window/column picked in the plan, highlighted in the form
+// Wall list shows one line per wall, with only the selected wall opened up. Kept per device.
+let wallsCollapsed = false;
+try { wallsCollapsed = localStorage.getItem('walls-collapsed') === '1'; } catch { /* storage unavailable */ }
 const imgCache = new Map(); // `${photoId}@${size}` → Promise<dataURL>
 const zooms = new Map();    // room id → plan zoom { k, x, y }
 const zoomOf = id => zooms.get(id) || zooms.set(id, newZoom()).get(id);
@@ -202,7 +206,7 @@ function summaryHtml(room) {
   }
   return html;
 }
-const planSvg = room => renderPlan(room, { selected: selectedWall, photoCounts: photoCounts(room), unit: P.unit, zoom: zoomOf(room.id).k });
+const planSvg = room => renderPlan(room, { selected: selectedWall, selectedOp, photoCounts: photoCounts(room), unit: P.unit, zoom: zoomOf(room.id).k });
 
 function refreshPlan() {
   const room = curRoom();
@@ -212,27 +216,30 @@ function refreshPlan() {
   if (sm) sm.innerHTML = summaryHtml(room);
 }
 
-function kindRow(o, at) {
+function kindRow(o, at, autoTag) {
   const st = openStyle(o);
   if (!st) return '';
   const opt = (v, l, on) => `<option value="${v}"${on ? ' selected' : ''}>${l}</option>`;
   return `<div class="op-kind">
+    <input class="op-tag" data-f="op.tag" ${at} value="${esc(o.tag || '')}" placeholder="${esc(autoTag)}" aria-label="ชื่อ เช่น D1">
     <select data-f="op.style" ${at} aria-label="แบบบาน">${Object.entries(OPEN_STYLES[o.type]).map(([k, l]) => opt(k, l, k === st.style)).join('')}</select>
     <select data-f="op.leaves" ${at} aria-label="จำนวนบาน">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} บาน`, i + 1 === st.leaves)).join('')}</select>
+    ${o.type === 'door' && st.style === 'swing' ? `<select data-f="op.swing" ${at} aria-label="ทิศเปิด">${opt('in', 'เปิดเข้า', o.swing !== 'out')}${opt('out', 'เปิดออก', o.swing === 'out')}</select>` : ''}
   </div>`;
 }
 
 function columnRow(w, c) {
   const at = `data-w="${w.id}" data-c="${c.id}"`;
   const idx = P && curRoom().walls.indexOf(w);
-  return `<div class="op col">
-    <b>เสา</b>
+  const round = c.shape === 'round';
+  return `<div class="op col${selectedOp === c.id ? ' picked' : ''}" id="op-${c.id}">
+    <select data-f="col.shape" ${at} aria-label="รูปเสา"><option value="rect"${round ? '' : ' selected'}>เสาเหลี่ยม</option><option value="round"${round ? ' selected' : ''}>เสากลม</option></select>
     <button class="icon" data-act="del-col" ${at} aria-label="ลบเสา">✕</button>
     <div class="col-f">
       ${lenField(`ห่างมุม ${cornerName(idx)}`, 'col.offset', c.offset, at)}
       ${lenField('ห่างจากผนัง', 'col.gap', c.gap, at)}
-      ${lenField('กว้างตามผนัง', 'col.width', c.width, at)}
-      ${lenField('ลึกเข้าห้อง', 'col.depth', c.depth, at)}
+      ${lenField(round ? 'เส้นผ่านศูนย์กลาง' : 'กว้างตามผนัง', 'col.width', c.width, at)}
+      ${round ? '' : lenField('ลึกเข้าห้อง', 'col.depth', c.depth, at)}
     </div>
   </div>`;
 }
@@ -240,23 +247,44 @@ function columnRow(w, c) {
 function openingRow(w, o) {
   const at = `data-w="${w.id}" data-o="${o.id}"`;
   const idx = P && curRoom().walls.indexOf(w);
-  return `<div class="op">
+  return `<div class="op${selectedOp === o.id ? ' picked' : ''}" id="op-${o.id}">
     <select data-f="op.type" ${at} aria-label="ชนิดช่องเปิด">${Object.entries(OPEN_TYPES).map(([k, l]) => `<option value="${k}"${o.type === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
     <button class="icon" data-act="del-op" ${at} aria-label="ลบ">✕</button>
-    ${kindRow(o, at)}
+    ${kindRow(o, at, openingTags(curRoom()).get(o.id) || '')}
     ${lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
     ${lenField('กว้าง', 'op.width', o.width, at)}
     ${lenField('สูง', 'op.height', o.height, at)}
   </div>`;
 }
 
+// One-line summary of a wall for the collapsed list: length, curve, tags, columns, photos.
+function wallSummary(room, w) {
+  const tags = openingTags(room);
+  return [
+    `${fmtLen(w.length, P.unit)} ${unitLabel()}`,
+    +w.bulge ? '⌒ โค้ง' : '',
+    w.openings.map(o => tags.get(o.id) || OPEN_TYPES[o.type]).join(' '),
+    w.columns?.length ? `เสา ${w.columns.length}` : '',
+    roomPhotos(room.id, w.id).length ? `📷${roomPhotos(room.id, w.id).length}` : '',
+  ].filter(Boolean).join(' · ');
+}
+
 function wallCard(room, w, i) {
   const n = room.walls.length, last = i === n - 1;
   const known = !w.customTurn && TURNS.some(([v]) => v === w.turn);
+  const corners = `มุม ${cornerName(i)} → ${last ? cornerName(0) : cornerName(i + 1)}`;
+  if (wallsCollapsed && selectedWall !== w.id) {
+    return `<article class="card wall mini-wall" id="w-${w.id}">
+      <button class="wall-head wall-open" data-act="open-wall" data-w="${w.id}">
+        <span class="badge">${i + 1}</span><b>ผนัง ${i + 1}</b><small>${esc(wallSummary(room, w))}</small><span class="chev">›</span>
+      </button>
+    </article>`;
+  }
+  const curved = w.bulge !== undefined && w.bulge !== null;
   return `<article class="card wall${selectedWall === w.id ? ' sel' : ''}" id="w-${w.id}">
     <div class="wall-head">
       <span class="badge">${i + 1}</span><b>ผนัง ${i + 1}</b>
-      <small>มุม ${cornerName(i)} → ${last ? cornerName(0) : cornerName(i + 1)}</small>
+      <small>${corners}</small>
       <button class="icon" data-act="del-wall" data-w="${w.id}" aria-label="ลบผนัง">✕</button>
     </div>
     <div class="row">
@@ -266,6 +294,9 @@ function wallCard(room, w, i) {
         <option value="custom"${known ? '' : ' selected'}>กำหนดองศาเอง…</option></select></label>`}
     </div>
     ${!last && !known ? field('องศาที่เลี้ยว (+ ขวา / − ซ้าย)', 'wall.turn', w.turn, 'number', `data-w="${w.id}" inputmode="text"`) : ''}
+    ${curved ? `<div class="row bulge">${lenField('ระยะโค้ง (+ ออก / − เข้าห้อง)', 'wall.bulge', w.bulge, `data-w="${w.id}" inputmode="text"`)}
+      <button class="icon" data-act="del-bulge" data-w="${w.id}" aria-label="เลิกโค้ง">✕</button></div>
+      <p class="hint">วัดจากกึ่งกลางเส้นตรงมุมถึงมุม ไปถึงผนัง · ความยาวด้านบนคือระยะตรงมุมถึงมุม</p>` : ''}
     ${field('หมายเหตุผนัง', 'wall.note', w.note, 'text', `data-w="${w.id}" placeholder="เช่น ผนังปูน มีปลั๊ก 2 จุด"`)}
     ${w.openings.map(o => openingRow(w, o)).join('')}
     ${(w.columns || []).map(c => columnRow(w, c)).join('')}
@@ -274,6 +305,11 @@ function wallCard(room, w, i) {
       <button class="btn sm" data-act="add-op" data-type="window" data-w="${w.id}">+ หน้าต่าง</button>
       <button class="btn sm" data-act="add-op" data-type="opening" data-w="${w.id}">+ ช่องเปิด</button>
       <button class="btn sm" data-act="add-col" data-w="${w.id}">+ เสา</button>
+    </div>
+    <div class="btns">
+      ${curved ? '' : `<button class="btn sm ghost" data-act="add-bulge" data-w="${w.id}">⌒ ผนังโค้ง</button>`}
+      <button class="btn sm ghost" data-act="split-wall" data-w="${w.id}">✂ แบ่งครึ่ง</button>
+      <button class="btn sm ghost" data-act="insert-wall" data-w="${w.id}">⤵ แทรกผนังต่อจากนี้</button>
     </div>
     ${photoStrip(room.id, w.id)}
   </article>`;
@@ -297,6 +333,8 @@ function viewRoom() {
       ${photoStrip(room.id, null)}
     </section>
     <p class="hint">ยืนในห้อง เริ่มที่มุม A แล้วไล่วัดผนังวนตามเข็มนาฬิกา (ห้องอยู่ทางขวามือ) ห้องสี่เหลี่ยมทั่วไปเลี้ยวขวา 90° ทุกมุม · แตะผนังในแปลนเพื่อไปที่ผนังนั้น</p>
+    <div class="walls-bar"><b>ผนัง ${room.walls.length} ด้าน</b>
+      <button class="btn sm" data-act="toggle-walls">${wallsCollapsed ? '☰ แสดงทั้งหมด' : '≡ ย่อทั้งหมด'}</button></div>
     <div id="walls">${room.walls.map((w, i) => wallCard(room, w, i)).join('')}</div>
     <button class="btn primary block" data-act="add-wall">+ เพิ่มผนัง</button>
     <button class="btn ghost danger block" data-act="delete-room">ลบห้องนี้</button>
@@ -307,13 +345,17 @@ function viewRoom() {
 
 function fmtOpening(o, wallIndex) {
   const st = openStyle(o);
-  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}` : '';
-  return `${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)})`;
+  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' เปิดออก' : ''}` : '';
+  const tag = openingTags(curRoomOf(o)).get(o.id);
+  return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)})`;
 }
+
+// Room holding an opening, for its tag in the report (which lists every room).
+const curRoomOf = o => P.rooms.find(r => r.walls.some(w => w.openings.includes(o)));
 
 function fmtColumn(c, wallIndex) {
   const u = P.unit;
-  return `เสา ${fmtLen(c.width, u)}×${fmtLen(c.depth, u)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(c.offset, u)}${+c.gap ? `, ห่างผนัง ${fmtLen(c.gap, u)}` : ''})`;
+  return `${c.shape === 'round' ? `เสากลม Ø${fmtLen(c.width, u)}` : `เสา ${fmtLen(c.width, u)}×${fmtLen(c.depth, u)}`} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(c.offset, u)}${+c.gap ? `, ห่างผนัง ${fmtLen(c.gap, u)}` : ''})`;
 }
 
 function roomReport(r) {
@@ -326,7 +368,7 @@ function roomReport(r) {
     <p class="r-sum">${parts.map(([k, v]) => `${k} <b>${v}</b>`).join(' · ')}</p>
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
     <table class="r-table"><thead><tr><th>ผนัง</th><th>ยาว (${unitLabel()})</th><th>ประตู / หน้าต่าง / เสา</th><th>หมายเหตุ</th></tr></thead><tbody>
-      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
+      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${+w.bulge ? `<br><small>โค้ง ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
     </tbody></table>
     ${list.length ? `<div class="r-photos">${list.map(p => `<figure><img data-img="${p.id}" data-size="1100" alt=""><figcaption>${esc(photoLabel(r, p))}</figcaption></figure>`).join('')}</div>` : ''}
   </section>`;
@@ -347,12 +389,20 @@ function viewReport() {
 }
 
 // ---------- actions ----------
-function selectWall(id, scroll) {
+// soft: just move the highlight (used while typing in a card, where a redraw would steal focus).
+async function selectWall(id, scroll, opId = null, soft = false) {
   if (view.name !== 'room') return;
+  const reopen = !soft && wallsCollapsed && selectedWall !== id;
+  const repick = !soft && selectedOp !== opId;
+  if (soft) $app.querySelectorAll('.op.picked').forEach(x => x.classList.remove('picked'));
   selectedWall = id;
-  refreshPlan();
+  selectedOp = opId;
+  if (reopen || repick) await rerender();
+  else refreshPlan();
   $app.querySelectorAll('.wall').forEach(c => c.classList.toggle('sel', c.id === 'w-' + id));
-  if (scroll) document.getElementById('w-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const target = opId && document.getElementById('op-' + opId);
+  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else if (scroll) document.getElementById('w-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function closeRoom(room) {
@@ -521,7 +571,7 @@ $app.addEventListener('click', async e => {
   const t = e.target.closest('[data-act]');
   if (!t) {
     const hit = e.target.closest('[data-wall]');
-    if (hit) selectWall(hit.dataset.wall, true);
+    if (hit) selectWall(hit.dataset.wall, true, hit.dataset.op || hit.dataset.col || null);
     return;
   }
   const room = curRoom();
@@ -584,6 +634,41 @@ $app.addEventListener('click', async e => {
       save();
       rerender();
       break;
+    case 'open-wall': await selectWall(w.id, true); break;
+    case 'toggle-walls':
+      wallsCollapsed = !wallsCollapsed;
+      try { localStorage.setItem('walls-collapsed', wallsCollapsed ? '1' : '0'); } catch { /* storage unavailable */ }
+      await rerender();
+      break;
+    case 'add-bulge': w.bulge = Math.round((+w.length || 100) / 10); save(); rerender(); break;
+    case 'del-bulge': delete w.bulge; save(); rerender(); break;
+    case 'insert-wall': {
+      // The new wall starts where this one ends and runs straight on; adjust its length and turn.
+      const nw = { ...newWall(), length: 100, turn: 0 };
+      room.walls.splice(room.walls.indexOf(w) + 1, 0, nw);
+      selectedWall = nw.id;
+      save();
+      await rerender();
+      document.getElementById('w-' + nw.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      break;
+    }
+    case 'split-wall': {
+      if (+w.bulge) { alert('ผนังโค้งแบ่งไม่ได้ ให้เลิกโค้งก่อน'); break; }
+      // Two straight halves; doors, windows and columns past the middle move to the second half.
+      const L = +w.length || 0, h = Math.round(L * 5) / 10;
+      const second = { ...newWall(), length: Math.round((L - h) * 10) / 10, turn: w.turn, customTurn: w.customTurn };
+      second.openings = w.openings.filter(o => +o.offset >= h).map(o => ({ ...o, offset: +o.offset - h }));
+      second.columns = (w.columns || []).filter(c => +c.offset >= h).map(c => ({ ...c, offset: +c.offset - h }));
+      w.openings = w.openings.filter(o => +o.offset < h);
+      w.columns = (w.columns || []).filter(c => +c.offset < h);
+      w.length = h;
+      w.turn = 0;
+      w.customTurn = false;
+      room.walls.splice(room.walls.indexOf(w) + 1, 0, second);
+      save();
+      await rerender();
+      break;
+    }
     case 'add-col':
       (w.columns ||= []).push({ id: uid(), offset: 0, gap: 0, width: 20, depth: 20 });
       save();
@@ -621,7 +706,7 @@ $app.addEventListener('input', e => {
   target[prop] = el.type !== 'number' ? el.value : el.value === '' || isNaN(v) ? '' : el.hasAttribute('data-len') ? fromUnit(v, P.unit) : v;
   save();
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
-  if ((scope === 'op' && prop === 'type') || (scope === 'project' && prop === 'unit')) rerender();
+  if ((scope === 'op' && (prop === 'type' || prop === 'style')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();
   else if (view.name === 'room') refreshPlan();
 });
 
@@ -644,7 +729,7 @@ $app.addEventListener('change', async e => {
 
 $app.addEventListener('focusin', e => {
   const card = e.target.closest('.wall');
-  if (card && selectedWall !== card.id.slice(2)) selectWall(card.id.slice(2), false);
+  if (card && selectedWall !== card.id.slice(2)) selectWall(card.id.slice(2), false, null, true);
 });
 
 addEventListener('hashchange', route);
