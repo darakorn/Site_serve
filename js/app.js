@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { geometry, renderPlan, svgToPng, fmtM, fmtArea, cornerName, normAngle } from './plan.js';
+import { geometry, renderPlan, svgToPng, fmtM, fmtArea, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 
@@ -11,7 +11,10 @@ const fileSafe = s => String(s || 'plan').replace(/[\\/:*?"<>|]+/g, '_').trim();
 
 const TURNS = [[90, 'เลี้ยวขวา 90°'], [-90, 'เลี้ยวซ้าย 90°'], [45, 'เลี้ยวขวา 45°'], [-45, 'เลี้ยวซ้าย 45°'], [0, 'ตรงไป (ไม่เลี้ยว)']];
 const OPEN_TYPES = { door: 'ประตู', window: 'หน้าต่าง', opening: 'ช่องเปิด' };
-const OPEN_DEFAULTS = { door: { offset: 30, width: 80, height: 200 }, window: { offset: 50, width: 120, height: 110 } };
+const OPEN_DEFAULTS = {
+  door: { offset: 30, width: 80, height: 200, ...OPEN_STYLE_DEFAULTS.door },
+  window: { offset: 50, width: 120, height: 110, ...OPEN_STYLE_DEFAULTS.window },
+};
 
 let P = null;             // project being edited
 let photos = new Map();   // photo id → record for P
@@ -194,12 +197,23 @@ function refreshPlan() {
   if (sm) sm.innerHTML = summaryHtml(room);
 }
 
+function kindRow(o, at) {
+  const st = openStyle(o);
+  if (!st) return '';
+  const opt = (v, l, on) => `<option value="${v}"${on ? ' selected' : ''}>${l}</option>`;
+  return `<div class="op-kind">
+    <select data-f="op.style" ${at} aria-label="แบบบาน">${Object.entries(OPEN_STYLES[o.type]).map(([k, l]) => opt(k, l, k === st.style)).join('')}</select>
+    <select data-f="op.leaves" ${at} aria-label="จำนวนบาน">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} บาน`, i + 1 === st.leaves)).join('')}</select>
+  </div>`;
+}
+
 function openingRow(w, o) {
   const at = `data-w="${w.id}" data-o="${o.id}"`;
   const idx = P && curRoom().walls.indexOf(w);
   return `<div class="op">
     <select data-f="op.type" ${at} aria-label="ชนิดช่องเปิด">${Object.entries(OPEN_TYPES).map(([k, l]) => `<option value="${k}"${o.type === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
     <button class="icon" data-act="del-op" ${at} aria-label="ลบ">✕</button>
+    ${kindRow(o, at)}
     ${field(`ห่างจากมุม ${cornerName(idx)}`, 'op.offset', o.offset, 'number', at)}
     ${field('กว้าง', 'op.width', o.width, 'number', at)}
     ${field('สูง', 'op.height', o.height, 'number', at)}
@@ -256,7 +270,9 @@ function viewRoom() {
 }
 
 function fmtOpening(o, wallIndex) {
-  return `${OPEN_TYPES[o.type]} ${fmtM(o.width)}×${fmtM(o.height)} ม. (ห่างมุม ${cornerName(wallIndex)} ${fmtM(o.offset)})`;
+  const st = openStyle(o);
+  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}` : '';
+  return `${OPEN_TYPES[o.type]}${kind} ${fmtM(o.width)}×${fmtM(o.height)} ม. (ห่างมุม ${cornerName(wallIndex)} ${fmtM(o.offset)})`;
 }
 
 function roomReport(r) {
@@ -491,7 +507,8 @@ $app.addEventListener('input', e => {
   target[prop] = el.type === 'number' ? (el.value === '' ? '' : parseFloat(el.value)) : el.value;
   save();
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
-  if (view.name === 'room') refreshPlan();
+  if (scope === 'op' && prop === 'type') rerender();
+  else if (view.name === 'room') refreshPlan();
 });
 
 $app.addEventListener('change', async e => {

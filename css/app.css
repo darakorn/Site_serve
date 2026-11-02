@@ -118,6 +118,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 }
 .op select { grid-column: 1 / 4; }
 .op .field { margin: 4px 0 2px; }
+.op-kind { grid-column: 1 / -1; display: flex; gap: 6px; margin-top: 6px; }
+.op-kind select { flex: 1; min-width: 0; }
 .op input, .op select { background: var(--card); }
 .btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 

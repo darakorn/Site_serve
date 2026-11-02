@@ -2,7 +2,7 @@
 // Drawing units are millimetres; the plan's y-down centimetres are flipped to CAD's y-up.
 // Walls are single lines on the measured inside face, broken at doors, windows and openings.
 
-import { geometry, fmtM, fmtArea } from './plan.js';
+import { geometry, openingShapes, fmtM, fmtArea } from './plan.js';
 
 const LAYERS = [['WALL', 7], ['DOOR', 3], ['WINDOW', 5], ['OPENING', 8], ['DIM', 1], ['TEXT', 2]];
 const DIM_OFF = 300, TICK = 60, TXT = 120, NAME_TXT = 250, WIN_DEPTH = 100, ROOM_GAP = 1500;
@@ -19,13 +19,15 @@ function writer() {
   const g = (code, v) => out.push(String(code), String(v));
   return {
     out,
-    line(layer, a, b) {
+    line(layer, a, b, dash) {
       g(0, 'LINE'); g(8, layer);
+      if (dash) g(6, 'DASHED');
       g(10, num(a.x)); g(20, num(a.y)); g(30, 0);
       g(11, num(b.x)); g(21, num(b.y)); g(31, 0);
     },
-    arc(layer, c, r, a0, a1) {
+    arc(layer, c, r, a0, a1, dash) {
       g(0, 'ARC'); g(8, layer);
+      if (dash) g(6, 'DASHED');
       g(10, num(c.x)); g(20, num(c.y)); g(30, 0);
       g(40, num(r)); g(50, num(a0)); g(51, num(a1));
     },
@@ -67,19 +69,16 @@ function drawRoom(w, room, ox, oy) {
       if (off > at) w.line('WALL', add(A, u, at), add(A, u, off));
       at = Math.max(at, off + ow);
       const a = add(A, u, off), b = add(A, u, off + ow);
-      if (o.type === 'door') {
-        const leaf = add(a, n, ow);
-        w.line('DOOR', a, leaf);
-        const t0 = deg(n), t1 = deg(u);
-        const ccw = (((t1 - t0) % 360) + 360) % 360 <= 180;
-        w.arc('DOOR', a, ow, ccw ? t0 : t1, ccw ? t1 : t0);
-      } else if (o.type === 'window') {
-        const oa = add(a, n, -WIN_DEPTH), ob = add(b, n, -WIN_DEPTH);
-        w.line('WINDOW', a, b);
-        w.line('WINDOW', add(a, n, -WIN_DEPTH / 2), add(b, n, -WIN_DEPTH / 2));
-        w.line('WINDOW', oa, ob);
-        w.line('WINDOW', a, oa);
-        w.line('WINDOW', b, ob);
+      if (o.type === 'door' || o.type === 'window') {
+        const layer = o.type.toUpperCase();
+        // Frames and sliding panels sit in a WIN_DEPTH band just outside the inside face.
+        for (const sh of openingShapes(o, a, u, n, ow, WIN_DEPTH, -WIN_DEPTH / 2)) {
+          if (sh.line) { w.line(layer, sh.line[0], sh.line[1], sh.dash); continue; }
+          const { c, from, to } = sh.arc;
+          const t0 = deg({ x: from.x - c.x, y: from.y - c.y }), t1 = deg({ x: to.x - c.x, y: to.y - c.y });
+          const ccw = (((t1 - t0) % 360) + 360) % 360 <= 180;
+          w.arc(layer, c, Math.hypot(from.x - c.x, from.y - c.y), ccw ? t0 : t1, ccw ? t1 : t0, sh.dash);
+        }
       } else {
         w.line('OPENING', a, b);
       }
@@ -121,8 +120,9 @@ export function plansToDxf(rooms) {
   const head = [
     '0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1009', '0', 'ENDSEC',
     '0', 'SECTION', '2', 'TABLES',
-    '0', 'TABLE', '2', 'LTYPE', '70', '1',
+    '0', 'TABLE', '2', 'LTYPE', '70', '2',
     '0', 'LTYPE', '2', 'CONTINUOUS', '70', '0', '3', 'Solid line', '72', '65', '73', '0', '40', '0.0',
+    '0', 'LTYPE', '2', 'DASHED', '70', '0', '3', '__ __ __', '72', '65', '73', '2', '40', '75.0', '49', '50.0', '49', '-25.0',
     '0', 'ENDTAB',
     // Thai needs a TrueType font: AutoCAD's default txt.shx has no Thai glyphs.
     '0', 'TABLE', '2', 'STYLE', '70', '1',

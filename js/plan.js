@@ -15,6 +15,89 @@ export const fmtArea = cm2 => (cm2 / 10000).toFixed(2) + ' ตร.ม.';
 export const cornerName = i => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : '');
 export const normAngle = a => Math.round(((((a % 360) + 540) % 360) - 180) * 10) / 10;
 
+export const OPEN_STYLES = {
+  door: { swing: 'บานเปิด', slide: 'บานเลื่อน', double: 'บานสวิง 2 ทาง' },
+  window: { casement: 'บานเปิด', slide: 'บานเลื่อน', awning: 'บานกระทุ้ง' },
+};
+export const OPEN_STYLE_DEFAULTS = { door: { style: 'swing', leaves: 1 }, window: { style: 'slide', leaves: 2 } };
+export const MAX_LEAVES = { door: 4, window: 6 };
+
+// Style and leaf count of a door/window, falling back to defaults for older records.
+export function openStyle(o) {
+  const d = OPEN_STYLE_DEFAULTS[o.type];
+  if (!d) return null;
+  const style = OPEN_STYLES[o.type][o.style] ? o.style : d.style;
+  const leaves = Math.min(MAX_LEAVES[o.type], Math.max(1, parseInt(o.leaves) || d.leaves));
+  return { style, leaves, label: OPEN_STYLES[o.type][style] };
+}
+
+/**
+ * Plan symbol of a door or window as lines and quarter arcs, in any coordinate space.
+ * a: start point on the wall line, u: unit along the wall, n: unit into the room,
+ * w: opening width, t: symbol depth (wall thickness), mid: offset of the frame centre along n.
+ * Returns [{ line: [p, q], dash }, { arc: { c, from, to }, dash }].
+ */
+export function openingShapes(o, a, u, n, w, t, mid = 0) {
+  const st = openStyle(o);
+  if (!st) return [];
+  const { style, leaves: L } = st, lw = w / L;
+  const P = (along, across = 0) => add(add(a, u, along), n, across);
+  const out = [];
+  const ln = (p, q, dash = false) => out.push({ line: [p, q], dash });
+  // Leaves hinge on the outer jambs, meeting in the middle.
+  const hinges = () => Array.from({ length: L }, (_, i) => {
+    const left = L === 1 || i < L / 2;
+    return { h: i * lw + (left ? 0 : lw), dir: left ? 1 : -1 };
+  });
+  const swing = (side, dash) => {
+    for (const { h, dir } of hinges()) {
+      const hp = P(h), leaf = P(h, side * lw);
+      ln(hp, leaf, dash);
+      out.push({ arc: { c: hp, from: leaf, to: P(h + dir * lw) }, dash: true });
+    }
+  };
+  const panels = depth => {
+    const lap = Math.min(lw * 0.08, t);
+    for (let i = 0; i < L; i++) {
+      const k = (L === 1 ? 0 : i % 2 ? 1 : -1) * depth;
+      ln(P(Math.max(0, i * lw - lap), mid + k), P(Math.min(w, (i + 1) * lw + lap), mid + k));
+    }
+  };
+
+  if (o.type === 'door') {
+    if (style === 'swing') swing(1, false);
+    else if (style === 'double') { swing(1, false); swing(-1, true); }
+    else panels(t / 4);
+    return out;
+  }
+
+  // Window frame on both faces with jamb ticks, then the sash symbol.
+  for (const k of [-t / 2, t / 2]) ln(P(0, mid + k), P(w, mid + k));
+  for (const x of [0, w]) ln(P(x, mid - t / 2), P(x, mid + t / 2));
+  if (style === 'slide') {
+    panels(t / 6);
+    return out;
+  }
+  ln(P(0, mid), P(w, mid));
+  for (let i = 1; i < L; i++) ln(P(i * lw, mid - t / 2), P(i * lw, mid + t / 2));
+  if (style === 'casement') {
+    // Sashes open outward.
+    for (const { h, dir } of hinges()) {
+      const hp = P(h, mid - t / 2), leaf = P(h, mid - t / 2 - lw);
+      ln(hp, leaf, true);
+      out.push({ arc: { c: hp, from: leaf, to: P(h + dir * lw, mid - t / 2) }, dash: true });
+    }
+  } else {
+    // Awning: sash pushed out from the bottom hinge, drawn as a dashed V per leaf.
+    for (let i = 0; i < L; i++) {
+      const tip = P((i + 0.5) * lw, mid - t / 2 - Math.min(lw * 0.35, t * 2.5));
+      ln(P(i * lw, mid - t / 2), tip, true);
+      ln(tip, P((i + 1) * lw, mid - t / 2), true);
+    }
+  }
+  return out;
+}
+
 export function geometry(room) {
   const pts = [{ x: 0, y: 0 }];
   const segs = [];
@@ -110,14 +193,17 @@ export function renderPlan(room, opt = {}) {
       if (!w) continue;
       const a = add(A, u, off * s), b = add(a, u, w * s), r = w * s;
       out.push(line(a, b, `stroke="#fff" stroke-width="${T + 2}"`));
-      if (o.type === 'door') {
-        const leaf = add(a, n, r);
-        const sweep = n.x * u.y - n.y * u.x > 0 ? 1 : 0;
-        out.push(line(a, leaf, `stroke="${INK}" stroke-width="${mini ? 1 : 1.6}"`));
-        out.push(`<path d="M${f(leaf.x)} ${f(leaf.y)} A${f(r)} ${f(r)} 0 0 ${sweep} ${f(b.x)} ${f(b.y)}" fill="none" stroke="${INK}" stroke-width="0.8" stroke-dasharray="3 2"/>`);
-      } else if (o.type === 'window') {
-        for (const k of [-T / 2, 0, T / 2]) out.push(line(add(a, n, k), add(b, n, k), `stroke="${INK}" stroke-width="${k ? 1 : 0.6}"`));
-        for (const p of [a, b]) out.push(line(add(p, n, -T / 2), add(p, n, T / 2), `stroke="${INK}" stroke-width="1"`));
+      if (o.type === 'door' || o.type === 'window') {
+        const solid = o.type === 'door' ? (mini ? 1 : 1.6) : 1;
+        for (const sh of openingShapes(o, a, u, n, r, T)) {
+          if (sh.line) {
+            out.push(line(sh.line[0], sh.line[1], `stroke="${INK}" stroke-width="${sh.dash ? 0.8 : solid}"${sh.dash ? ' stroke-dasharray="3 2"' : ''}`));
+          } else {
+            const { c, from, to } = sh.arc, rr = Math.hypot(from.x - c.x, from.y - c.y);
+            const sweep = (from.x - c.x) * (to.y - c.y) - (from.y - c.y) * (to.x - c.x) > 0 ? 1 : 0;
+            out.push(`<path d="M${f(from.x)} ${f(from.y)} A${f(rr)} ${f(rr)} 0 0 ${sweep} ${f(to.x)} ${f(to.y)}" fill="none" stroke="${INK}" stroke-width="0.8" stroke-dasharray="3 2"/>`);
+          }
+        }
       } else {
         out.push(line(a, b, `stroke="${INK}" stroke-width="1.2" stroke-dasharray="4 3"`));
       }
