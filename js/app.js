@@ -1,6 +1,7 @@
 import { db } from './db.js';
 import { geometry, renderPlan, svgToPng, fmtM, fmtArea, cornerName, normAngle } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
+import { plansToDxf } from './dxf.js';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -160,6 +161,7 @@ function viewProject() {
     </section>
     <h2>ส่งออก</h2>
     <a class="btn block" href="#/p/${P.id}/report">📄 รายงานแปลน + รูป (พิมพ์ / PDF)</a>
+    <button class="btn block" data-act="export-dxf-all">📐 แปลนทุกห้องเป็น DXF (CAD)</button>
     <button class="btn block" data-act="backup">💾 สำรองโปรเจกต์เป็นไฟล์</button>
     <button class="btn ghost danger block" data-act="delete-project">ลบโปรเจกต์</button>
   </main>`;
@@ -233,7 +235,7 @@ function wallCard(room, w, i) {
 
 function viewRoom() {
   const room = curRoom();
-  $app.innerHTML = `${bar(`#/p/${P.id}`, room.name, '<button class="btn sm" data-act="export-png">ส่งออกรูปแปลน</button>')}
+  $app.innerHTML = `${bar(`#/p/${P.id}`, room.name, '<button class="btn sm" data-act="export-png">PNG</button><button class="btn sm" data-act="export-dxf">DXF</button>')}
   <main>
     <section class="plan-wrap">
       <div id="plan" class="plan">${planSvg(room)}</div>
@@ -364,6 +366,11 @@ async function exportPng(room) {
   await shareOrDownload(await svgToPng(svg, 4), `${fileSafe(P.name)}-${fileSafe(room.name)}.png`);
 }
 
+function exportDxf(rooms, name) {
+  const blob = new Blob([plansToDxf(rooms)], { type: 'application/dxf' });
+  return shareOrDownload(blob, `${name}.dxf`);
+}
+
 const blobToDataURL = blob => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
 
 async function backup() {
@@ -467,6 +474,8 @@ $app.addEventListener('click', async e => {
     case 'close-room': closeRoom(room); save(); rerender(); break;
     case 'open-photo': openPhoto(t.dataset.ph); break;
     case 'export-png': exportPng(room); break;
+    case 'export-dxf': exportDxf([room], `${fileSafe(P.name)}-${fileSafe(room.name)}`); break;
+    case 'export-dxf-all': exportDxf(P.rooms, fileSafe(P.name)); break;
     case 'print': print(); break;
   }
 });
