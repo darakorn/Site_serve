@@ -125,6 +125,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 .mini-wall { padding: 0; }
 .wall-open { width: 100%; padding: 12px 14px; font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; }
 .wall-open small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.wall-fold { cursor: pointer; }
+.wall-head .chev.open { font-size: 22px; color: var(--muted); transform: rotate(90deg); }
+.door-quick { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--acc); border-radius: 12px; background: var(--card); }
+.door-quick b { color: var(--acc); }
 .wall-open .chev { font-size: 22px; color: var(--muted); }
 .op.picked { box-shadow: 0 0 0 2px var(--acc); }
 .row.bulge { align-items: end; }

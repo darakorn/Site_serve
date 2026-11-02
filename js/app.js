@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.11';
+const APP_VERSION = '1.0.12';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -273,6 +273,7 @@ function kindRow(o, at, autoTag) {
     <select data-f="op.style" ${at} aria-label="แบบบาน">${Object.entries(OPEN_STYLES[o.type]).map(([k, l]) => opt(k, l, k === st.style)).join('')}</select>
     <select data-f="op.leaves" ${at} aria-label="จำนวนบาน">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} บาน`, i + 1 === st.leaves)).join('')}</select>
     ${o.type === 'door' && st.style === 'swing' ? `<select data-f="op.swing" ${at} aria-label="ทิศเปิด">${opt('in', 'เปิดเข้า', o.swing !== 'out')}${opt('out', 'เปิดออก', o.swing === 'out')}</select>` : ''}
+    ${o.type === 'door' && st.style !== 'slide' ? `<select data-f="op.hinge" ${at} aria-label="ฝั่งบานพับ">${opt('left', 'บานพับซ้าย', o.hinge !== 'right')}${opt('right', 'บานพับขวา', o.hinge === 'right')}</select>` : ''}
   </div>`;
 }
 
@@ -347,10 +348,12 @@ function wallCard(room, w, i) {
     </article>`;
   }
   const curved = w.bulge !== undefined && w.bulge !== null;
+  // In the collapsed list the open wall's header folds it back up.
   return `<article class="card wall${selectedWall === w.id ? ' sel' : ''}" id="w-${w.id}">
-    <div class="wall-head">
+    <div class="wall-head${wallsCollapsed ? ' wall-fold' : ''}"${wallsCollapsed ? ` data-act="close-wall" data-w="${w.id}"` : ''}>
       <span class="badge">${i + 1}</span><b>ผนัง ${i + 1}</b>
       <small>${corners}</small>
+      ${wallsCollapsed ? '<span class="chev open">›</span>' : ''}
       <button class="icon" data-act="del-wall" data-w="${w.id}" aria-label="ลบผนัง">✕</button>
     </div>
     <div class="row">
@@ -423,13 +426,29 @@ function handlesFor(room) {
   return out;
 }
 
+// Quick buttons on the plan for the door picked there: flip hinge side, flip in / out.
+function doorQuick(room) {
+  const w = room.walls.find(x => x.openings.some(o => o.id === selectedOp));
+  const o = w?.openings.find(x => x.id === selectedOp);
+  const st = o?.type === 'door' && openStyle(o);
+  if (!st || st.style === 'slide') return '';
+  const at = `data-w="${w.id}" data-o="${o.id}"`;
+  return `<div class="door-quick">
+    <b>${esc(openingTags(room).get(o.id))}</b>
+    <button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'บานพับขวา' : 'บานพับซ้าย'}</button>
+    ${st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'เปิดออก' : 'เปิดเข้า'}</button>` : ''}
+    <button class="btn sm icon-btn" data-act="unpick" aria-label="ปิด">✕</button>
+  </div>`;
+}
+
 const PLAN_TOOLS = { edit: '✋ ย้าย/ยืด', wall: '🧱 ผนัง', line: '╱ เส้น', rect: '▭ สี่เหลี่ยม', circle: '◯ วงกลม' };
 
 function drawBar() {
+  const room = curRoom(), quick = room ? doorQuick(room) : '';
   const undo = `<button class="btn sm icon-btn" data-act="undo" aria-label="ย้อนกลับ"${hist.past.length ? '' : ' disabled'}>↶</button>
     <button class="btn sm icon-btn" data-act="redo" aria-label="ทำซ้ำ"${hist.future.length ? '' : ' disabled'}>↷</button>`;
-  if (!planTool) return `${undo}<button class="btn sm" data-act="tool" data-tool="edit">✏️ แก้ไข / วาดในแปลน</button>`;
-  return `${undo}${Object.entries(PLAN_TOOLS).map(([k, l]) => `<button class="btn sm${planTool === k ? ' on' : ''}" data-act="tool" data-tool="${k}">${l}</button>`).join('')}
+  if (!planTool) return `${quick}${undo}<button class="btn sm" data-act="tool" data-tool="edit">✏️ แก้ไข / วาดในแปลน</button>`;
+  return `${quick}${undo}${Object.entries(PLAN_TOOLS).map(([k, l]) => `<button class="btn sm${planTool === k ? ' on' : ''}" data-act="tool" data-tool="${k}">${l}</button>`).join('')}
     <button class="btn sm${snapOn ? ' on' : ''}" data-act="snap" aria-pressed="${snapOn}">🧲 Snap</button>
     <button class="btn sm primary" data-act="tool-off">เสร็จ</button>
     <small class="tool-hint">${{
@@ -488,7 +507,7 @@ function viewRoom() {
 
 function fmtOpening(o, wallIndex) {
   const st = openStyle(o);
-  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' เปิดออก' : ''}` : '';
+  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' เปิดออก' : ''}${o.type === 'door' && st.style !== 'slide' && o.hinge === 'right' ? ' บานพับขวา' : ''}` : '';
   const tag = openingTags(curRoomOf(o)).get(o.id);
   return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)}${o.type === 'window' && o.sill !== undefined && o.sill !== '' ? `, สูงจากพื้น ${fmtLen(o.sill, P.unit)}` : ''})`;
 }
@@ -809,6 +828,17 @@ $app.addEventListener('click', async e => {
       location.hash = `#/p/${P.id}/r/${copy.id}`;
       break;
     }
+    case 'door-hinge':
+    case 'door-swing': {
+      const o = w.openings.find(x => x.id === t.dataset.o);
+      if (t.dataset.act === 'door-hinge') o.hinge = o.hinge === 'right' ? 'left' : 'right';
+      else o.swing = o.swing === 'out' ? 'in' : 'out';
+      save();
+      await rerender();
+      break;
+    }
+    case 'unpick': selectedOp = null; await rerender(); break;
+    case 'close-wall': selectedWall = null; selectedOp = null; await rerender(); break;
     case 'undo': await undoRedo(true); break;
     case 'redo': await undoRedo(false); break;
     case 'tool': planTool = t.dataset.tool; preview = {}; await rerender(); break;

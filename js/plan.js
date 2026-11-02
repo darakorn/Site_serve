@@ -51,7 +51,8 @@ export function openStyle(o) {
 /**
  * Plan symbol of a door or window as lines and quarter arcs, in any coordinate space.
  * a: start point on the wall line, u: unit along the wall, n: unit into the room,
- * (o.swing === 'out' opens a swing door away from the room),
+ * (o.swing === 'out' opens a swing door away from the room; o.hinge === 'right' mirrors a door so
+ * its hinge is on the right as seen from inside the room — the wall's end corner),
  * w: opening width, t: symbol depth (wall thickness), mid: offset of the frame centre along n.
  * Returns [{ line: [p, q], dash }, { arc: { c, from, to }, dash }].
  */
@@ -59,7 +60,8 @@ export function openingShapes(o, a, u, n, w, t, mid = 0) {
   const st = openStyle(o);
   if (!st) return [];
   const { style, leaves: L } = st, lw = w / L;
-  const P = (along, across = 0) => add(add(a, u, along), n, across);
+  const flip = o.type === 'door' && o.hinge === 'right';
+  const P = (along, across = 0) => add(add(a, u, flip ? w - along : along), n, across);
   const out = [];
   const ln = (p, q, dash = false) => out.push({ line: [p, q], dash });
   // Leaves hinge on the outer jambs, meeting in the middle.
