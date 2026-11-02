@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.10';
+const APP_VERSION = '1.0.11';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -18,7 +18,7 @@ const TURNS = [[90, 'เลี้ยวขวา 90°'], [-90, 'เลี้ย�
 const OPEN_TYPES = { door: 'ประตู', window: 'หน้าต่าง', opening: 'ช่องเปิด' };
 const OPEN_DEFAULTS = {
   door: { offset: 30, width: 80, height: 200, ...OPEN_STYLE_DEFAULTS.door },
-  window: { offset: 50, width: 120, height: 110, ...OPEN_STYLE_DEFAULTS.window },
+  window: { offset: 50, width: 120, height: 110, sill: 90, ...OPEN_STYLE_DEFAULTS.window },
 };
 
 let P = null;             // project being edited
@@ -319,6 +319,7 @@ function openingRow(w, o) {
     ${ref ? lenField(`ห่างจาก ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
     ${lenField('กว้าง', 'op.width', o.width, at)}
     ${lenField('สูง', 'op.height', o.height, at)}
+    ${o.type === 'window' ? lenField('สูงจากพื้น', 'op.sill', o.sill, at) : ''}
   </div>`;
 }
 
@@ -489,7 +490,7 @@ function fmtOpening(o, wallIndex) {
   const st = openStyle(o);
   const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' เปิดออก' : ''}` : '';
   const tag = openingTags(curRoomOf(o)).get(o.id);
-  return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)})`;
+  return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)}${o.type === 'window' && o.sill !== undefined && o.sill !== '' ? `, สูงจากพื้น ${fmtLen(o.sill, P.unit)}` : ''})`;
 }
 
 // Room holding an opening, for its tag in the report (which lists every room).
@@ -912,6 +913,7 @@ $app.addEventListener('input', e => {
     if (r) target.refGap = Math.max(0, Math.round(((+target.offset || 0) - (+r.offset || 0) - (+r.width || 0)) * 10) / 10);
     else { delete target.ref; delete target.refGap; }
   }
+  if (scope === 'op' && prop === 'type' && target.type === 'window' && (target.sill === undefined || target.sill === '')) target.sill = OPEN_DEFAULTS.window.sill;
   if (scope === 'op') resolveRefs(w);
   save(`${key}:${el.dataset.w || ''}:${el.dataset.o || el.dataset.c || el.dataset.s || ''}`);
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;

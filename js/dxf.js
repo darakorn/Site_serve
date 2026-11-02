@@ -1,4 +1,6 @@
 // Floor plans as DXF (R12 / AC1009, readable by AutoCAD, LibreCAD, ZWCAD, SketchUp…).
+// With a ceiling height set, the walls are complete in 3D: full height between openings, plus the
+// part under each window and over each door / window / opening.
 // Drawing units are millimetres; the plan's y-down centimetres are flipped to CAD's y-up.
 // Wall, Door, Window, Opening and Column hold closed outlines ready to extrude into 3D: walls run
 // from the measured inside face out by the wall thickness and break at doors and windows, whose
@@ -38,9 +40,10 @@ function writer() {
       g(40, num(r)); g(50, num(a0)); g(51, num(a1));
     },
     // Closed outline; a vertex with `b` starts an arc to the next vertex (DXF bulge = tan(angle / 4)).
-    poly(layer, pts, height = 0) {
+    // height: extruded up by (entity thickness); z: elevation it starts from.
+    poly(layer, pts, height = 0, z = 0) {
       g(0, 'POLYLINE'); g(8, layer); g(66, 1);
-      g(10, 0); g(20, 0); g(30, 0); g(70, 1);
+      g(10, 0); g(20, 0); g(30, num(z)); g(70, 1);
       if (height > 0) g(39, num(height));
       for (const p of pts) {
         g(0, 'VERTEX'); g(8, layer); g(10, num(p.x)); g(20, num(p.y)); g(30, 0);
@@ -112,13 +115,13 @@ function drawRoom(w, room, ox, oy, unit, t) {
     // Wall pieces between openings, each a closed outline through the wall thickness.
     // Curved walls follow their arc on both faces.
     const qa = outerCorner('start', sg), qb = outerCorner('end', sg);
-    const piece = (s0, s1) => {
+    const piece = (s0, s1, z = 0, h = height) => {
       if (s1 - s0 < 0.5) return;
       const e0 = at(sg, s0), e1 = at(sg, s1);
       const i0 = e0.p, i1 = e1.p;
       const o0 = s0 <= 0 ? qa : add(i0, e0.o, t), o1 = s1 >= len ? qb : add(i1, e1.o, t);
-      if (!C) return w.poly('Wall', [i0, i1, o1, o0], height);
-      w.poly('Wall', [{ ...i0, b: Math.tan(turn(C, i0, i1) / 4) }, i1, { ...o1, b: Math.tan(turn(C, o1, o0) / 4) }, o0], height);
+      if (!C) return w.poly('Wall', [i0, i1, o1, o0], h, z);
+      w.poly('Wall', [{ ...i0, b: Math.tan(turn(C, i0, i1) / 4) }, i1, { ...o1, b: Math.tan(turn(C, o1, o0) / 4) }, o0], h, z);
     };
     let pos = 0;
     for (const { op, off, w: ow } of ops) {
@@ -128,7 +131,14 @@ function drawRoom(w, room, ox, oy, unit, t) {
       const a = at(sg, off).p, b = at(sg, off + ow).p, span = Math.hypot(b.x - a.x, b.y - a.y) || 1;
       const ul = { x: (b.x - a.x) / span, y: (b.y - a.y) / span }, nl = V(sg.inwardOf(V(ul))), ol = neg(nl);
       const layer = op.type === 'door' ? 'Door' : op.type === 'window' ? 'Window' : 'Opening';
-      w.poly(layer, [a, b, add(b, ol, t), add(a, ol, t)]);
+      // With a ceiling height the wall is closed off under the window (sill) and over the opening
+      // (lintel), and the door/window itself is a block from its sill to its head.
+      const sill = op.type === 'window' ? Math.max(0, +op.sill || 0) * 10 : 0, oh = Math.max(0, +op.height || 0) * 10;
+      if (height > 0) {
+        if (sill > 0) piece(off, off + ow, 0, Math.min(sill, height));
+        if (oh && height - sill - oh > 0.5) piece(off, off + ow, sill + oh, height - sill - oh);
+      }
+      w.poly(layer, [a, b, add(b, ol, t), add(a, ol, t)], height > 0 ? oh : 0, height > 0 ? sill : 0);
       if (layer === 'Opening') continue;
       w.text('Text', add(add(a, ul, span / 2), nl, TXT * 2.5), TXT * 1.2, tags.get(op.id));
       // Frames and sliding panels sit inside the wall thickness; swings open from the inside face.
