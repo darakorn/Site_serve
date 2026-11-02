@@ -182,7 +182,7 @@ const shapeCenter = sh => mid(...shapePoints(sh));
 export function geometry(room) {
   const pts = [{ x: 0, y: 0 }];
   const segs = [];
-  let heading = 0;
+  let heading = +room.heading0 || 0; // direction of the first wall (0 = east), set when walls are drawn on the plan
   room.walls.forEach((wall, i) => {
     const len = Math.max(0, +wall.length || 0);
     const r = (heading * Math.PI) / 180;
@@ -254,7 +254,10 @@ function readableAngle(u) {
 }
 
 /**
- * opt: { mini, selected (wall id), selectedOp (opening / column / shape id), draft (shape being drawn), photoCounts {wallId: n}, export, title, subtitle, unit,
+ * opt: { mini, selected (wall id), selectedOp (opening / column / shape id), draft (shape being drawn),
+ *        draftWall ({ a, b, len } wall being drawn), snapAt (point a drag snapped to),
+ *        handles ([{ x, y, id, for }] drag handles, plan cm), editing (a plan tool is on),
+ *        frame ({ ox, oy, s, VH } to draw at, instead of fitting the room), photoCounts {wallId: n}, export, title, subtitle, unit,
  *        zoom (CSS zoom the SVG is shown at: strokes, text and offsets shrink by it so they keep
  *        their on-screen size while the walls grow) }
  */
@@ -264,20 +267,23 @@ export function renderPlan(room, opt = {}) {
   const svgOpen = (h, extra = '') =>
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VW} ${h}"${opt.export ? ` width="${VW}" height="${h}"` : ''} font-family="${FONT}"${extra}>`;
   const shapes = [...(room.shapes || []), ...(opt.draft ? [{ ...opt.draft, id: '__draft' }] : [])];
-  if (!g.segs.length) {
+  // An empty room still gets a frame in the editor, so its first walls can be drawn on it.
+  if (!g.segs.length && (mini || opt.export || !opt.editing)) {
     return `${svgOpen(120)}<text x="${VW / 2}" y="64" text-anchor="middle" fill="${DIM}" font-size="14">ยังไม่มีผนัง</text></svg>`;
   }
 
   const head = opt.export ? 46 : 0;
   const pad = mini ? 10 : 56;
   const maxH = mini ? 280 : 440;
-  const fit = [...g.extent, ...shapes.flatMap(shapePoints)];
+  const fit = [...g.extent, ...(g.segs.length ? [] : [{ x: -50, y: -50 }, { x: 400, y: 300 }]), ...(room.shapes || []).flatMap(shapePoints)];
   const xs = fit.map(p => p.x), ys = fit.map(p => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   const bw = Math.max(Math.max(...xs) - minX, 1), bh = Math.max(Math.max(...ys) - minY, 1);
-  const s = Math.min((VW - 2 * pad) / bw, (maxH - 2 * pad) / bh);
-  const VH = Math.round(bh * s + 2 * pad + head);
-  const ox = (VW - bw * s) / 2 - minX * s, oy = pad + head - minY * s;
+  let s = Math.min((VW - 2 * pad) / bw, (maxH - 2 * pad) / bh);
+  let VH = Math.round(bh * s + 2 * pad + head);
+  let ox = (VW - bw * s) / 2 - minX * s, oy = pad + head - minY * s;
+  // During a drag the caller pins the scale and position, so the plan doesn't refit under the finger.
+  if (opt.frame) ({ ox, oy, s, VH } = opt.frame);
   const X = p => ({ x: ox + p.x * s, y: oy + p.y * s });
   const sign = g.cw ? 1 : -1;
   const inward = u => ({ x: -u.y * sign, y: u.x * sign });
@@ -462,6 +468,22 @@ export function renderPlan(room, opt = {}) {
       // Doors and windows on top of the wall targets, so a tap picks the opening itself.
       out.push(...hits);
     }
+  }
+
+  // Editing overlays: the wall being drawn, where a drag snapped, and drag handles — on top of everything.
+  if (!mini && opt.draftWall) {
+    const a = X(opt.draftWall.a), b = X(opt.draftWall.b);
+    out.push(line(a, b, `stroke="${ACC}" stroke-width="${f(T)}" stroke-opacity="0.6" stroke-linecap="square"`));
+    const m = mid(a, b);
+    out.push(`<text x="${f(m.x)}" y="${f(m.y - Z(10))}" text-anchor="middle" font-size="${f(Z(12))}" font-weight="700" fill="${ACC}" paint-order="stroke" stroke="#fff" stroke-width="${f(Z(3))}">${fmtLen(opt.draftWall.len, opt.unit)}</text>`);
+  }
+  if (!mini && opt.snapAt) {
+    const q = X(opt.snapAt);
+    out.push(`<circle cx="${f(q.x)}" cy="${f(q.y)}" r="${f(Z(7))}" fill="none" stroke="#e8710a" stroke-width="${f(Z(2))}"/>`);
+  }
+  for (const h of opt.handles || []) {
+    const q = X(h);
+    out.push(`<circle cx="${f(q.x)}" cy="${f(q.y)}" r="${f(Z(8))}" fill="#fff" stroke="${ACC}" stroke-width="${f(Z(2.5))}" data-handle="${h.id}" data-for="${h.for}" style="cursor:grab"/>`);
   }
 
   // Plan ↔ SVG mapping, so a tap or a drag on the plan can be turned back into room cm.

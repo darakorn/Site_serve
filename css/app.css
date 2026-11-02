@@ -99,6 +99,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 .plan { display: flex; justify-content: center; overflow: hidden; touch-action: none; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
 .plan-box { position: relative; }
 .draw-bar { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 8px; }
+.draw-bar .tool-hint { flex-basis: 100%; color: var(--muted); font-size: 12px; }
 .draw-bar .btn.on { background: var(--acc); color: var(--acc-ink); border-color: var(--acc); }
 .shapes h3 small { font-weight: 400; color: var(--muted); }
 .op.shape > input { grid-column: 1 / 4; }

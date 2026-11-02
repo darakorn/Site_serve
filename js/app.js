@@ -1,11 +1,12 @@
 import { db } from './db.js';
-import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES } from './plan.js';
+import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, shapePoints } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
+import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.8';
+const APP_VERSION = '1.0.9';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -25,8 +26,10 @@ let photos = new Map();   // photo id → record for P
 let view = { name: 'home' };
 let selectedWall = null;
 let selectedOp = null;    // door/window/column/shape picked in the plan, highlighted in the form
-let drawTool = null;      // 'line' | 'rect' | 'circle' while drawing on the plan
-let draft = null;         // shape being dragged out
+let planTool = null;      // 'edit' | 'wall' | 'line' | 'rect' | 'circle' while working on the plan
+let preview = {};         // { draft, draftWall, snapAt } shown while a plan drag is under way
+let snapOn = true;
+try { snapOn = localStorage.getItem('plan-snap') !== '0'; } catch { /* storage unavailable */ }
 // Wall list shows one line per wall, with only the selected wall opened up. Kept per device.
 let wallsCollapsed = false;
 try { wallsCollapsed = localStorage.getItem('walls-collapsed') === '1'; } catch { /* storage unavailable */ }
@@ -208,7 +211,7 @@ function summaryHtml(room) {
   }
   return html;
 }
-const planSvg = room => renderPlan(room, { selected: selectedWall, selectedOp, draft, photoCounts: photoCounts(room), unit: P.unit, zoom: zoomOf(room.id).k });
+const planSvg = room => renderPlan(room, { selected: selectedWall, selectedOp, ...preview, editing: !!planTool, handles: planTool === 'edit' ? handlesFor(room) : null, photoCounts: photoCounts(room), unit: P.unit, zoom: zoomOf(room.id).k });
 
 function refreshPlan() {
   const room = curRoom();
@@ -361,53 +364,32 @@ function shapesCard(room) {
 
 const snap = v => Math.round(v / 5) * 5; // drawn shapes snap to 5 cm
 
-// Drag on the plan to draw the current tool's shape. Pinching (two fingers) cancels it.
-function attachDraw(box, room) {
-  let id = null, start = null;
-  const toPlan = e => {
-    const svg = box.querySelector('svg');
-    const [ox, oy, s] = (svg?.dataset.map || '0,0,1').split(',').map(Number);
-    const r = svg.getBoundingClientRect(), vb = svg.viewBox.baseVal;
-    // The viewBox is letterboxed inside the element (preserveAspectRatio meet).
-    const k = Math.min(r.width / vb.width, r.height / vb.height);
-    const vx = (e.clientX - r.left - (r.width - vb.width * k) / 2) / k, vy = (e.clientY - r.top - (r.height - vb.height * k) / 2) / k;
-    return { x: snap((vx - ox) / s), y: snap((vy - oy) / s) };
-  };
-  const shapeFrom = (a, b) => {
-    if (drawTool === 'rect') return { type: 'rect', x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
-    if (drawTool === 'circle') return { type: 'circle', x: a.x, y: a.y, d: snap(2 * Math.hypot(b.x - a.x, b.y - a.y)) };
-    // Lines lock to horizontal / vertical / 45° when close.
-    let { x, y } = b;
-    const ang = Math.atan2(y - a.y, x - a.x), len = Math.hypot(x - a.x, y - a.y), step = Math.PI / 4;
-    const near = Math.round(ang / step) * step;
-    if (Math.abs(ang - near) < 0.1) { x = snap(a.x + Math.cos(near) * len); y = snap(a.y + Math.sin(near) * len); }
-    return { type: 'line', x1: a.x, y1: a.y, x2: x, y2: y };
-  };
-  box.addEventListener('pointerdown', e => {
-    if (!drawTool) return;
-    if (id !== null) { id = null; draft = null; refreshPlan(); return; } // second finger: it's a pinch
-    id = e.pointerId;
-    start = toPlan(e);
-  });
-  box.addEventListener('pointermove', e => {
-    if (!drawTool || e.pointerId !== id) return;
-    draft = shapeFrom(start, toPlan(e));
-    refreshPlan();
-  });
-  const end = e => {
-    if (e.pointerId !== id) return;
-    id = null;
-    const sh = draft;
-    draft = null;
-    const big = sh && Math.max(...['w', 'h', 'd'].map(k => +sh[k] || 0), Math.hypot((sh.x2 ?? 0) - (sh.x1 ?? 0), (sh.y2 ?? 0) - (sh.y1 ?? 0))) >= 5;
-    if (!big) { refreshPlan(); return; }
-    (room.shapes ||= []).push({ id: uid(), label: '', ...sh });
-    selectedOp = room.shapes.at(-1).id;
-    save();
-    rerender();
-  };
-  box.addEventListener('pointerup', end);
-  box.addEventListener('pointercancel', e => { if (e.pointerId === id) { id = null; draft = null; refreshPlan(); } });
+// Handles shown in edit mode: the far end of the selected wall, and the selected shape's grips.
+function handlesFor(room) {
+  const out = [];
+  const sh = room.shapes?.find(x => x.id === selectedOp);
+  if (sh) {
+    const [a, b] = shapePoints(sh);
+    if (sh.type === 'rect') [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }].forEach((p, k) => out.push({ ...p, id: `rect-${k}`, for: sh.id }));
+    else if (sh.type === 'circle') out.push({ x: (+sh.x || 0) + (+sh.d || 0) / 2, y: +sh.y || 0, id: 'circle-r', for: sh.id });
+    else out.push({ ...a, id: 'line-1', for: sh.id }, { ...b, id: 'line-2', for: sh.id });
+  }
+  const sg = geometry(room).segs.find(x => x.wall.id === selectedWall);
+  if (sg && !sh) out.push({ ...sg.p1, id: 'wall-end', for: sg.wall.id });
+  return out;
+}
+
+const PLAN_TOOLS = { edit: '✋ ย้าย/ยืด', wall: '🧱 ผนัง', line: '╱ เส้น', rect: '▭ สี่เหลี่ยม', circle: '◯ วงกลม' };
+
+function drawBar() {
+  if (!planTool) return '<button class="btn sm" data-act="tool" data-tool="edit">✏️ แก้ไข / วาดในแปลน</button>';
+  return `${Object.entries(PLAN_TOOLS).map(([k, l]) => `<button class="btn sm${planTool === k ? ' on' : ''}" data-act="tool" data-tool="${k}">${l}</button>`).join('')}
+    <button class="btn sm${snapOn ? ' on' : ''}" data-act="snap" aria-pressed="${snapOn}">🧲 Snap</button>
+    <button class="btn sm primary" data-act="tool-off">เสร็จ</button>
+    <small class="tool-hint">${{
+      edit: 'ลากประตู หน้าต่าง เสา หรือสิ่งของเพื่อย้าย · แตะผนังแล้วลากจุดปลายเพื่อยืด/หมุน',
+      wall: 'แตะหรือลากไปจุดที่ผนังสิ้นสุด ผนังใหม่จะต่อจากปลายผนังล่าสุด · ลากกลับมาที่มุม A เพื่อปิดห้อง',
+    }[planTool] || 'ลากในแปลนเพื่อวาด'}</small>`;
 }
 
 function viewRoom() {
@@ -419,10 +401,7 @@ function viewRoom() {
         <div id="plan" class="plan">${planSvg(room)}</div>
         <button class="btn sm zoom-reset" data-act="zoom-reset" aria-label="ย่อกลับ">⤢ ย่อกลับ</button>
       </div>
-      <div class="draw-bar">${drawTool
-        ? `${Object.entries(SHAPE_TYPES).map(([k, l]) => `<button class="btn sm${drawTool === k ? ' on' : ''}" data-act="draw-tool" data-tool="${k}">${{ line: '╱', rect: '▭', circle: '◯' }[k]} ${l}</button>`).join('')}
-           <button class="btn sm primary" data-act="draw-off">เสร็จ</button>`
-        : '<button class="btn sm" data-act="draw-on">✏️ วาดในแปลน</button>'}</div>
+      <div class="draw-bar">${drawBar()}</div>
       <div id="summary" class="summary">${summaryHtml(room)}</div>
     </section>
     <section class="card">
@@ -440,8 +419,23 @@ function viewRoom() {
     <button class="btn ghost danger block" data-act="delete-room">ลบห้องนี้</button>
   </main>`;
   const box = document.getElementById('plan');
-  attachZoom(box, zoomOf(room.id), refreshPlan, () => !!drawTool);
-  attachDraw(box, room);
+  const busy = attachPlanTools(box, {
+    room,
+    tool: () => planTool,
+    snap: () => snapOn,
+    uid,
+    newWall: extra => ({ ...newWall(), ...extra }),
+    resolveRefs,
+    preview(p) { preview = p; refreshPlan(); },
+    async done(id, kind) {
+      preview = {};
+      if (kind === 'wall') selectedWall = id;
+      else if (id) selectedOp = id;
+      save();
+      await rerender();
+    },
+  });
+  attachZoom(box, zoomOf(room.id), refreshPlan, () => busy() || (!!planTool && planTool !== 'edit'));
   return hydrateImages();
 }
 
@@ -505,7 +499,7 @@ async function selectWall(id, scroll, opId = null, soft = false) {
   else refreshPlan();
   $app.querySelectorAll('.wall').forEach(c => c.classList.toggle('sel', c.id === 'w-' + id));
   const target = opId && document.getElementById('op-' + opId);
-  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (target && scroll) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
   else if (scroll) document.getElementById('w-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -675,14 +669,15 @@ $app.addEventListener('click', async e => {
   const t = e.target.closest('[data-act]');
   if (!t) {
     const sh = e.target.closest('[data-shape]');
-    if (sh && !drawTool) {
+    if (sh && (!planTool || planTool === 'edit')) {
       selectedOp = sh.dataset.shape;
       await rerender();
       document.getElementById('op-' + selectedOp)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
     const hit = e.target.closest('[data-wall]');
-    if (hit) selectWall(hit.dataset.wall, true, hit.dataset.op || hit.dataset.col || null);
+    // While editing on the plan, picking something keeps the page where it is.
+    if (hit) selectWall(hit.dataset.wall, !planTool, hit.dataset.op || hit.dataset.col || null);
     return;
   }
   const room = curRoom();
@@ -750,9 +745,13 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'open-wall': await selectWall(w.id, true); break;
-    case 'draw-on': drawTool = 'rect'; await rerender(); break;
-    case 'draw-tool': drawTool = t.dataset.tool; await rerender(); break;
-    case 'draw-off': drawTool = null; draft = null; await rerender(); break;
+    case 'tool': planTool = t.dataset.tool; preview = {}; await rerender(); break;
+    case 'tool-off': planTool = null; preview = {}; await rerender(); break;
+    case 'snap':
+      snapOn = !snapOn;
+      try { localStorage.setItem('plan-snap', snapOn ? '1' : '0'); } catch { /* storage unavailable */ }
+      await rerender();
+      break;
     case 'add-shape': {
       // Dropped in the middle of the room at a typical size, then typed in exactly.
       const g = geometry(room), xs = g.extent.map(p => p.x), ys = g.extent.map(p => p.y);
