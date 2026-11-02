@@ -3,6 +3,9 @@ import { geometry, renderPlan, svgToPng, fmtM, fmtArea, cornerName, normAngle, O
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 
+// Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
+const APP_VERSION = '1.0.1';
+
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -130,6 +133,7 @@ async function viewHome() {
       ? list.map(p => `<a class="card link" href="#/p/${p.id}"><b>${esc(p.name || 'ไม่มีชื่อ')}</b><small>${[p.site, `${p.rooms.length} ห้อง`, p.date].filter(Boolean).map(esc).join(' · ')}</small></a>`).join('')
       : '<p class="empty">ยังไม่มีโปรเจกต์ กดปุ่มด้านบนเพื่อเริ่มสำรวจ</p>'}
     <label class="btn ghost block">นำเข้าไฟล์สำรอง (.json)<input type="file" accept=".json,application/json" data-import hidden></label>
+    <p class="hint version">เวอร์ชัน ${APP_VERSION}</p>
   </main>`;
 }
 

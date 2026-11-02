@@ -86,6 +86,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 .btn.sm { min-height: 36px; padding: 4px 11px; font-size: 14px; }
 .icon { min-width: 40px; min-height: 40px; font: inherit; color: var(--muted); background: transparent; border: 0; border-radius: 10px; cursor: pointer; }
 .empty, .hint { color: var(--muted); font-size: 14px; margin: 8px 2px; }
+.version { text-align: center; margin-top: 24px; }
 
 /* Room editor */
 .plan-wrap {
