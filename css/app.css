@@ -124,6 +124,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 }
 .op select { grid-column: 1 / 4; }
 .op .field { margin: 4px 0 2px; }
+.op.col > b { grid-column: 1 / 4; align-self: center; }
+.col-f { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 0 6px; }
 .op-kind { grid-column: 1 / -1; display: flex; gap: 6px; margin-top: 6px; }
 .op-kind select { flex: 1; min-width: 0; }
 .op input, .op select { background: var(--card); }

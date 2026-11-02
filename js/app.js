@@ -5,7 +5,7 @@ import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.4';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -153,6 +153,7 @@ function viewProject() {
       ${field('ลูกค้า', 'project.client', P.client)}
       ${field('สถานที่', 'project.site', P.site)}
       <div class="row">${field('วันที่สำรวจ', 'project.date', P.date, 'date')}${field('ผู้สำรวจ', 'project.surveyor', P.surveyor)}</div>
+      ${lenField('ความหนาผนังสำหรับ DXF', 'project.wallThickness', P.wallThickness ?? 10, 'placeholder="10 ซม."')}
       <label class="field"><span>หน่วยวัดระยะ (ใช้กรอกและแสดงในแปลน)</span><select data-f="project.unit">
         ${Object.entries(UNIT_NAMES).map(([k, l]) => `<option value="${k}"${unitOf(P.unit) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
       ${field('หมายเหตุ', 'project.note', P.note, 'textarea')}
@@ -220,6 +221,21 @@ function kindRow(o, at) {
   </div>`;
 }
 
+function columnRow(w, c) {
+  const at = `data-w="${w.id}" data-c="${c.id}"`;
+  const idx = P && curRoom().walls.indexOf(w);
+  return `<div class="op col">
+    <b>เสา</b>
+    <button class="icon" data-act="del-col" ${at} aria-label="ลบเสา">✕</button>
+    <div class="col-f">
+      ${lenField(`ห่างมุม ${cornerName(idx)}`, 'col.offset', c.offset, at)}
+      ${lenField('ห่างจากผนัง', 'col.gap', c.gap, at)}
+      ${lenField('กว้างตามผนัง', 'col.width', c.width, at)}
+      ${lenField('ลึกเข้าห้อง', 'col.depth', c.depth, at)}
+    </div>
+  </div>`;
+}
+
 function openingRow(w, o) {
   const at = `data-w="${w.id}" data-o="${o.id}"`;
   const idx = P && curRoom().walls.indexOf(w);
@@ -251,10 +267,12 @@ function wallCard(room, w, i) {
     ${!last && !known ? field('องศาที่เลี้ยว (+ ขวา / − ซ้าย)', 'wall.turn', w.turn, 'number', `data-w="${w.id}" inputmode="text"`) : ''}
     ${field('หมายเหตุผนัง', 'wall.note', w.note, 'text', `data-w="${w.id}" placeholder="เช่น ผนังปูน มีปลั๊ก 2 จุด"`)}
     ${w.openings.map(o => openingRow(w, o)).join('')}
+    ${(w.columns || []).map(c => columnRow(w, c)).join('')}
     <div class="btns">
       <button class="btn sm" data-act="add-op" data-type="door" data-w="${w.id}">+ ประตู</button>
       <button class="btn sm" data-act="add-op" data-type="window" data-w="${w.id}">+ หน้าต่าง</button>
       <button class="btn sm" data-act="add-op" data-type="opening" data-w="${w.id}">+ ช่องเปิด</button>
+      <button class="btn sm" data-act="add-col" data-w="${w.id}">+ เสา</button>
     </div>
     ${photoStrip(room.id, w.id)}
   </article>`;
@@ -292,6 +310,11 @@ function fmtOpening(o, wallIndex) {
   return `${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)})`;
 }
 
+function fmtColumn(c, wallIndex) {
+  const u = P.unit;
+  return `เสา ${fmtLen(c.width, u)}×${fmtLen(c.depth, u)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(c.offset, u)}${+c.gap ? `, ห่างผนัง ${fmtLen(c.gap, u)}` : ''})`;
+}
+
 function roomReport(r) {
   const { parts } = summaryParts(r);
   const n = r.walls.length;
@@ -301,8 +324,8 @@ function roomReport(r) {
     <div class="r-plan">${renderPlan(r, { photoCounts: photoCounts(r), unit: P.unit })}</div>
     <p class="r-sum">${parts.map(([k, v]) => `${k} <b>${v}</b>`).join(' · ')}</p>
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
-    <table class="r-table"><thead><tr><th>ผนัง</th><th>ยาว (${unitLabel()})</th><th>ประตู / หน้าต่าง</th><th>หมายเหตุ</th></tr></thead><tbody>
-      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}</td><td>${w.openings.map(o => fmtOpening(o, i)).join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
+    <table class="r-table"><thead><tr><th>ผนัง</th><th>ยาว (${unitLabel()})</th><th>ประตู / หน้าต่าง / เสา</th><th>หมายเหตุ</th></tr></thead><tbody>
+      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
     </tbody></table>
     ${list.length ? `<div class="r-photos">${list.map(p => `<figure><img data-img="${p.id}" data-size="1100" alt=""><figcaption>${esc(photoLabel(r, p))}</figcaption></figure>`).join('')}</div>` : ''}
   </section>`;
@@ -402,7 +425,7 @@ async function exportPng(room) {
 }
 
 function exportDxf(rooms, name) {
-  const blob = new Blob([plansToDxf(rooms, P.unit)], { type: 'application/dxf' });
+  const blob = new Blob([plansToDxf(rooms, { unit: P.unit, wallThickness: P.wallThickness })], { type: 'application/dxf' });
   return shareOrDownload(blob, `${name}.dxf`);
 }
 
@@ -501,6 +524,16 @@ $app.addEventListener('click', async e => {
       save();
       rerender();
       break;
+    case 'add-col':
+      (w.columns ||= []).push({ id: uid(), offset: 0, gap: 0, width: 20, depth: 20 });
+      save();
+      rerender();
+      break;
+    case 'del-col':
+      w.columns = (w.columns || []).filter(c => c.id !== t.dataset.c);
+      save();
+      rerender();
+      break;
     case 'del-op':
       w.openings = w.openings.filter(o => o.id !== t.dataset.o);
       save();
@@ -522,7 +555,7 @@ $app.addEventListener('input', e => {
   const [scope, prop] = key.split('.');
   const room = curRoom();
   const w = room?.walls.find(x => x.id === el.dataset.w);
-  const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o) }[scope];
+  const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c) }[scope];
   if (!target) return;
   const v = parseFloat(el.value);
   target[prop] = el.type !== 'number' ? el.value : el.value === '' || isNaN(v) ? '' : el.hasAttribute('data-len') ? fromUnit(v, P.unit) : v;

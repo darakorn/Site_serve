@@ -115,6 +115,28 @@ export function openingShapes(o, a, u, n, w, t, mid = 0) {
   return out;
 }
 
+// Points along a wall (cm from its start corner) where doors, windows and openings begin and end,
+// for a chain dimension. null when the wall has none.
+export function chainBreaks(sg) {
+  const cuts = [];
+  for (const o of sg.wall.openings || []) {
+    const off = clamp(+o.offset || 0, 0, sg.len), w = clamp(+o.width || 0, 0, sg.len - off);
+    if (w) cuts.push(off, off + w);
+  }
+  if (!cuts.length) return null;
+  return [...new Set([0, ...cuts, sg.len].map(v => Math.round(v * 10) / 10))].sort((a, b) => a - b);
+}
+
+// Column footprint in plan cm: `offset` along the wall from its start corner, `gap` out from the
+// wall into the room, `width` along the wall and `depth` into the room.
+export function columnCorners(sg, c, inward) {
+  const n = inward(sg.u), w = Math.max(0, +c.width || 0), d = Math.max(0, +c.depth || 0);
+  if (!w || !d) return null;
+  const p = add(add(sg.p0, sg.u, Math.max(0, +c.offset || 0)), n, Math.max(0, +c.gap || 0));
+  return [p, add(p, sg.u, w), add(add(p, sg.u, w), n, d), add(p, n, d)];
+}
+export const inwardFor = cw => u => (cw ? { x: -u.y, y: u.x } : { x: u.y, y: -u.x });
+
 export function geometry(room) {
   const pts = [{ x: 0, y: 0 }];
   const segs = [];
@@ -224,10 +246,15 @@ export function renderPlan(room, opt = {}) {
       } else {
         out.push(line(a, b, `stroke="${INK}" stroke-width="1.2" stroke-dasharray="4 3"`));
       }
-      if (!mini) {
-        const m = add(mid(a, b), n, -10);
-        out.push(`<text x="${f(m.x)}" y="${f(m.y)}" transform="rotate(${f(readableAngle(u))} ${f(m.x)} ${f(m.y)})" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="${DIM}" ${halo}>${fmtLen(w, opt.unit)}</text>`);
-      }
+    }
+  }
+
+  // Columns
+  const inPlan = inwardFor(g.cw);
+  for (const sg of g.segs) {
+    for (const c of sg.wall.columns || []) {
+      const q = columnCorners(sg, c, inPlan);
+      if (q) out.push(`<polygon points="${q.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" fill="#555" stroke="${INK}" stroke-width="1"/>`);
     }
   }
 
@@ -236,11 +263,26 @@ export function renderPlan(room, opt = {}) {
     for (const sg of g.segs) {
       if (!sg.len) continue;
       const a = X(sg.p0), b = X(sg.p1), n = inward(sg.u), o = { x: -n.x, y: -n.y };
-      const d = 24;
-      const da = add(a, o, d), db = add(b, o, d);
       const thin = `stroke="${DIM}" stroke-width="0.7"`;
+      const tick = p => out.push(line(add(add(p, sg.u, -3), o, 3), add(add(p, sg.u, 3), o, -3), `stroke="${INK}" stroke-width="1.2"`));
+      // Chain dimension: corner, each door/window edge, corner. The overall length moves out a row.
+      const breaks = chainBreaks(sg), dc = 22, d = breaks ? 40 : 24;
+      if (breaks) {
+        const at = v => add(a, sg.u, v * s);
+        out.push(line(add(at(0), o, dc), add(at(sg.len), o, dc), thin));
+        breaks.forEach((v, k) => {
+          const p = add(at(v), o, dc);
+          if (k && k < breaks.length - 1) out.push(line(add(at(v), o, 6), add(p, o, 3), thin));
+          tick(p);
+          const nx = breaks[k + 1];
+          if (nx == null || (nx - v) * s < 16) return;
+          const t = add(add(at((v + nx) / 2), o, dc), o, 6);
+          out.push(`<text x="${f(t.x)}" y="${f(t.y)}" transform="rotate(${f(readableAngle(sg.u))} ${f(t.x)} ${f(t.y)})" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="${DIM}" ${halo}>${fmtLen(nx - v, opt.unit)}</text>`);
+        });
+      }
+      const da = add(a, o, d), db = add(b, o, d);
       out.push(line(add(a, o, 6), add(a, o, d + 4), thin), line(add(b, o, 6), add(b, o, d + 4), thin), line(da, db, thin));
-      for (const p of [da, db]) out.push(line(add(add(p, sg.u, -3), o, 3), add(add(p, sg.u, 3), o, -3), `stroke="${INK}" stroke-width="1.2"`));
+      tick(da); tick(db);
       const t = add(mid(da, db), o, 8);
       out.push(`<text x="${f(t.x)}" y="${f(t.y)}" transform="rotate(${f(readableAngle(sg.u))} ${f(t.x)} ${f(t.y)})" text-anchor="middle" dominant-baseline="middle" font-size="12" font-weight="600" fill="${INK}" ${halo}>${fmtLen(sg.len, opt.unit)}</text>`);
 
