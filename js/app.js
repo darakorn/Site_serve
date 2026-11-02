@@ -5,7 +5,7 @@ import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.0.5';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -201,7 +201,7 @@ function summaryHtml(room) {
   }
   return html;
 }
-const planSvg = room => renderPlan(room, { selected: selectedWall, photoCounts: photoCounts(room), unit: P.unit });
+const planSvg = room => renderPlan(room, { selected: selectedWall, photoCounts: photoCounts(room), unit: P.unit, zoom: zoomOf(room.id).k });
 
 function refreshPlan() {
   const room = curRoom();
@@ -300,7 +300,7 @@ function viewRoom() {
     <button class="btn primary block" data-act="add-wall">+ เพิ่มผนัง</button>
     <button class="btn ghost danger block" data-act="delete-room">ลบห้องนี้</button>
   </main>`;
-  attachZoom(document.getElementById('plan'), zoomOf(room.id));
+  attachZoom(document.getElementById('plan'), zoomOf(room.id), refreshPlan);
   return hydrateImages();
 }
 
@@ -542,7 +542,7 @@ $app.addEventListener('click', async e => {
     case 'close-room': closeRoom(room); save(); rerender(); break;
     case 'open-photo': openPhoto(t.dataset.ph); break;
     case 'export-png': exportPng(room); break;
-    case 'zoom-reset': { const z = zoomOf(room.id); z.k = 1; applyZoom(document.getElementById('plan'), z); break; }
+    case 'zoom-reset': zoomOf(room.id).k = 1; refreshPlan(); break;
     case 'export-dxf': exportDxf([room], `${fileSafe(P.name)}-${fileSafe(room.name)}`); break;
     case 'export-dxf-all': exportDxf(P.rooms, fileSafe(P.name)); break;
     case 'print': print(); break;

@@ -167,13 +167,12 @@ export function geometry(room) {
   };
 }
 
-const f = n => n.toFixed(1);
+const f = n => n.toFixed(2);
 const add = (p, v, k) => ({ x: p.x + v.x * k, y: p.y + v.y * k });
 const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const line = (a, b, attrs) => `<line x1="${f(a.x)}" y1="${f(a.y)}" x2="${f(b.x)}" y2="${f(b.y)}" ${attrs}/>`;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-const halo = 'paint-order="stroke" stroke="#fff" stroke-width="3" stroke-linejoin="round"';
 
 function readableAngle(u) {
   let a = (Math.atan2(u.y, u.x) * 180) / Math.PI;
@@ -183,7 +182,9 @@ function readableAngle(u) {
 }
 
 /**
- * opt: { mini, selected (wall id), photoCounts {wallId: n}, export, title, subtitle, unit }
+ * opt: { mini, selected (wall id), photoCounts {wallId: n}, export, title, subtitle, unit,
+ *        zoom (CSS zoom the SVG is shown at: strokes, text and offsets shrink by it so they keep
+ *        their on-screen size while the walls grow) }
  */
 export function renderPlan(room, opt = {}) {
   const g = geometry(room);
@@ -206,7 +207,10 @@ export function renderPlan(room, opt = {}) {
   const X = p => ({ x: ox + p.x * s, y: oy + p.y * s });
   const sign = g.cw ? 1 : -1;
   const inward = u => ({ x: -u.y * sign, y: u.x * sign });
-  const T = mini ? 3 : 6;
+  const z = opt.zoom || 1, Z = v => v / z;
+  const T = Z(mini ? 3 : 6);
+  const halo = `paint-order="stroke" stroke="#fff" stroke-width="${f(Z(3))}" stroke-linejoin="round"`;
+  const dash = (a, b) => `stroke-dasharray="${f(Z(a))} ${f(Z(b))}"`;
   const out = [];
 
   if (opt.export) {
@@ -218,10 +222,10 @@ export function renderPlan(room, opt = {}) {
   const corners = g.closed ? g.pts.slice(0, -1) : g.pts;
   const ptsAttr = corners.map(p => { const q = X(p); return `${f(q.x)},${f(q.y)}`; }).join(' ');
   out.push(`<polygon points="${ptsAttr}" fill="#f3efe6"/>`);
-  out.push(`<${g.closed ? 'polygon' : 'polyline'} points="${ptsAttr}" fill="none" stroke="${INK}" stroke-width="${T}" stroke-linejoin="miter" stroke-linecap="square"/>`);
+  out.push(`<${g.closed ? 'polygon' : 'polyline'} points="${ptsAttr}" fill="none" stroke="${INK}" stroke-width="${f(T)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
 
   const sel = g.segs.find(sg => sg.wall.id === opt.selected);
-  if (sel && !mini) out.push(line(X(sel.p0), X(sel.p1), `stroke="${ACC}" stroke-width="${T}" stroke-linecap="square"`));
+  if (sel && !mini) out.push(line(X(sel.p0), X(sel.p1), `stroke="${ACC}" stroke-width="${f(T)}" stroke-linecap="square"`));
 
   // Doors, windows and other openings
   for (const sg of g.segs) {
@@ -231,20 +235,20 @@ export function renderPlan(room, opt = {}) {
       const w = clamp(+o.width || 0, 0, sg.len - off);
       if (!w) continue;
       const a = add(A, u, off * s), b = add(a, u, w * s), r = w * s;
-      out.push(line(a, b, `stroke="#fff" stroke-width="${T + 2}"`));
+      out.push(line(a, b, `stroke="#fff" stroke-width="${f(T + Z(2))}"`));
       if (o.type === 'door' || o.type === 'window') {
-        const solid = o.type === 'door' ? (mini ? 1 : 1.6) : 1;
+        const solid = Z(o.type === 'door' ? (mini ? 1 : 1.6) : 1);
         for (const sh of openingShapes(o, a, u, n, r, T)) {
           if (sh.line) {
-            out.push(line(sh.line[0], sh.line[1], `stroke="${INK}" stroke-width="${sh.dash ? 0.8 : solid}"${sh.dash ? ' stroke-dasharray="3 2"' : ''}`));
+            out.push(line(sh.line[0], sh.line[1], `stroke="${INK}" stroke-width="${f(sh.dash ? Z(0.8) : solid)}"${sh.dash ? ' ' + dash(3, 2) : ''}`));
           } else {
             const { c, from, to } = sh.arc, rr = Math.hypot(from.x - c.x, from.y - c.y);
             const sweep = (from.x - c.x) * (to.y - c.y) - (from.y - c.y) * (to.x - c.x) > 0 ? 1 : 0;
-            out.push(`<path d="M${f(from.x)} ${f(from.y)} A${f(rr)} ${f(rr)} 0 0 ${sweep} ${f(to.x)} ${f(to.y)}" fill="none" stroke="${INK}" stroke-width="0.8" stroke-dasharray="3 2"/>`);
+            out.push(`<path d="M${f(from.x)} ${f(from.y)} A${f(rr)} ${f(rr)} 0 0 ${sweep} ${f(to.x)} ${f(to.y)}" fill="none" stroke="${INK}" stroke-width="${f(Z(0.8))}" ${dash(3, 2)}/>`);
           }
         }
       } else {
-        out.push(line(a, b, `stroke="${INK}" stroke-width="1.2" stroke-dasharray="4 3"`));
+        out.push(line(a, b, `stroke="${INK}" stroke-width="${f(Z(1.2))}" ${dash(4, 3)}`));
       }
     }
   }
@@ -254,47 +258,64 @@ export function renderPlan(room, opt = {}) {
   for (const sg of g.segs) {
     for (const c of sg.wall.columns || []) {
       const q = columnCorners(sg, c, inPlan);
-      if (q) out.push(`<polygon points="${q.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" fill="#555" stroke="${INK}" stroke-width="1"/>`);
+      if (q) out.push(`<polygon points="${q.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" fill="#555" stroke="${INK}" stroke-width="${f(Z(1))}"/>`);
     }
   }
 
   if (!mini) {
+    // Labels are collected with a priority and drawn only where they don't collide with a
+    // more important one, so short walls and small columns don't bury the plan in text.
+    // Zooming in gives them room and they come back.
+    const labels = [];
+    const label = (prio, p, w, h, ang, svg) => {
+      const r = (ang * Math.PI) / 180, c = Math.abs(Math.cos(r)), sn = Math.abs(Math.sin(r));
+      const bw = w * c + h * sn, bh = w * sn + h * c;
+      labels.push({ prio, box: [p.x - bw / 2, p.y - bh / 2, p.x + bw / 2, p.y + bh / 2], svg });
+    };
+    const text = (prio, p, str, size, ang, attrs) => {
+      const fs = Z(size);
+      label(prio, p, String(str).length * fs * 0.6 + Z(2), fs * 1.15, ang,
+        `<text x="${f(p.x)}" y="${f(p.y)}"${ang ? ` transform="rotate(${f(ang)} ${f(p.x)} ${f(p.y)})"` : ''} text-anchor="middle" dominant-baseline="central" font-size="${f(fs)}" ${attrs}>${esc(str)}</text>`);
+    };
+    const thin = `stroke="${DIM}" stroke-width="${f(Z(0.7))}"`;
+
     // Dimension lines outside each wall, wall numbers inside
     for (const sg of g.segs) {
       if (!sg.len) continue;
       const a = X(sg.p0), b = X(sg.p1), n = inward(sg.u), o = { x: -n.x, y: -n.y };
-      const thin = `stroke="${DIM}" stroke-width="0.7"`;
-      const tick = p => out.push(line(add(add(p, sg.u, -3), o, 3), add(add(p, sg.u, 3), o, -3), `stroke="${INK}" stroke-width="1.2"`));
+      const ang = readableAngle(sg.u), lenStr = fmtLen(sg.len, opt.unit), px = sg.len * s;
+      const isSel = sel === sg;
+      const c = add(mid(a, b), n, Z(18)), r = Z(9);
+      if (px >= Z(14) || isSel) label(isSel ? 0 : 4, c, 2 * r, 2 * r, 0,
+        `<circle cx="${f(c.x)}" cy="${f(c.y)}" r="${f(r)}" fill="${isSel ? ACC : '#fff'}" stroke="${isSel ? ACC : DIM}" stroke-width="${f(Z(1))}"/>` +
+        `<text x="${f(c.x)}" y="${f(c.y)}" text-anchor="middle" dominant-baseline="central" font-size="${f(Z(10))}" font-weight="700" fill="${isSel ? '#fff' : INK}">${sg.i + 1}</text>`);
+      const cnt = opt.photoCounts?.[sg.wall.id];
+      if (cnt) text(5, add(c, n, Z(15)), `📷${cnt}`, 9, 0, `fill="${DIM}"`);
+      // Too short for its own length at this zoom: its dimension would only cover its neighbours.
+      // Zooming in brings it back.
+      if (px < lenStr.length * Z(12) * 0.6 + Z(8)) continue;
+      const tick = p => out.push(line(add(add(p, sg.u, -Z(3)), o, Z(3)), add(add(p, sg.u, Z(3)), o, -Z(3)), `stroke="${INK}" stroke-width="${f(Z(1.2))}"`));
       // Chain dimension: corner, each door/window edge, corner. The overall length moves out a row.
-      const breaks = chainBreaks(sg), dc = 22, d = breaks ? 40 : 24;
+      const breaks = chainBreaks(sg), dc = Z(22), d = Z(breaks ? 40 : 24);
       if (breaks) {
         const at = v => add(a, sg.u, v * s);
         out.push(line(add(at(0), o, dc), add(at(sg.len), o, dc), thin));
         breaks.forEach((v, k) => {
           const p = add(at(v), o, dc);
-          if (k && k < breaks.length - 1) out.push(line(add(at(v), o, 6), add(p, o, 3), thin));
+          if (k && k < breaks.length - 1) out.push(line(add(at(v), o, Z(6)), add(p, o, Z(3)), thin));
           tick(p);
           const nx = breaks[k + 1];
-          if (nx == null || (nx - v) * s < 16) return;
-          const t = add(add(at((v + nx) / 2), o, dc), o, 6);
-          out.push(`<text x="${f(t.x)}" y="${f(t.y)}" transform="rotate(${f(readableAngle(sg.u))} ${f(t.x)} ${f(t.y)})" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="${DIM}" ${halo}>${fmtLen(nx - v, opt.unit)}</text>`);
+          if (nx == null) return;
+          const str = fmtLen(nx - v, opt.unit);
+          if ((nx - v) * s < str.length * Z(9) * 0.6) return; // doesn't fit between its ticks
+          text(3, add(add(at((v + nx) / 2), o, dc), o, Z(6)), str, 9, ang, `fill="${DIM}" ${halo}`);
         });
       }
       const da = add(a, o, d), db = add(b, o, d);
-      out.push(line(add(a, o, 6), add(a, o, d + 4), thin), line(add(b, o, 6), add(b, o, d + 4), thin), line(da, db, thin));
+      out.push(line(add(a, o, Z(6)), add(a, o, d + Z(4)), thin), line(add(b, o, Z(6)), add(b, o, d + Z(4)), thin), line(da, db, thin));
       tick(da); tick(db);
-      const t = add(mid(da, db), o, 8);
-      out.push(`<text x="${f(t.x)}" y="${f(t.y)}" transform="rotate(${f(readableAngle(sg.u))} ${f(t.x)} ${f(t.y)})" text-anchor="middle" dominant-baseline="middle" font-size="12" font-weight="600" fill="${INK}" ${halo}>${fmtLen(sg.len, opt.unit)}</text>`);
-
-      const isSel = sel === sg;
-      const c = add(mid(a, b), n, 18);
-      out.push(`<circle cx="${f(c.x)}" cy="${f(c.y)}" r="9" fill="${isSel ? ACC : '#fff'}" stroke="${isSel ? ACC : DIM}"/>`);
-      out.push(`<text x="${f(c.x)}" y="${f(c.y)}" text-anchor="middle" dominant-baseline="central" font-size="10" font-weight="700" fill="${isSel ? '#fff' : INK}">${sg.i + 1}</text>`);
-      const cnt = opt.photoCounts?.[sg.wall.id];
-      if (cnt) {
-        const pc = add(c, n, 15);
-        out.push(`<text x="${f(pc.x)}" y="${f(pc.y)}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="${DIM}">📷${cnt}</text>`);
-      }
+      // Longer walls win a tie for space.
+      text(1 + 1 / (1 + sg.len), add(mid(da, db), o, Z(8)), lenStr, 12, ang, `font-weight="600" fill="${INK}" ${halo}`);
     }
 
     // Corner letters
@@ -304,19 +325,26 @@ export function renderPlan(room, opt = {}) {
       let v = { x: 0, y: 0 };
       for (const sg of [prev, next]) if (sg) { const n = inward(sg.u); v.x -= n.x; v.y -= n.y; }
       const k = Math.hypot(v.x, v.y) || 1;
-      const q = add(X(p), { x: v.x / k, y: v.y / k }, 13);
-      out.push(`<text x="${f(q.x)}" y="${f(q.y)}" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="700" fill="${ACC}" ${halo}>${cornerName(i)}</text>`);
+      text(i ? 2 : 0.5, add(X(p), { x: v.x / k, y: v.y / k }, Z(13)), cornerName(i), 11, 0, `font-weight="700" fill="${ACC}" ${halo}`);
     });
 
     if (g.segs.length >= 2 && g.gap >= 1) {
-      const a = X(g.end), b = X(g.pts[0]), m = mid(a, b);
-      out.push(line(a, b, `stroke="${RED}" stroke-width="1.5" stroke-dasharray="5 4"`));
-      out.push(`<text x="${f(m.x)}" y="${f(m.y)}" text-anchor="middle" dominant-baseline="central" font-size="11" fill="${RED}" ${halo}>ห่าง ${fmtLen(g.gap, opt.unit)} ${UNITS[unitOf(opt.unit)].label}</text>`);
+      const a = X(g.end), b = X(g.pts[0]);
+      out.push(line(a, b, `stroke="${RED}" stroke-width="${f(Z(1.5))}" ${dash(5, 4)}`));
+      text(0, mid(a, b), `ห่าง ${fmtLen(g.gap, opt.unit)} ${UNITS[unitOf(opt.unit)].label}`, 11, 0, `fill="${RED}" ${halo}`);
+    }
+
+    const placed = [], gapPx = Z(1);
+    const hits = (p, q) => p[0] < q[2] + gapPx && q[0] < p[2] + gapPx && p[1] < q[3] + gapPx && q[1] < p[3] + gapPx;
+    for (const l of labels.sort((x, y) => x.prio - y.prio)) {
+      if (l.prio > 0 && placed.some(q => hits(l.box, q))) continue;
+      placed.push(l.box);
+      out.push(l.svg);
     }
 
     if (!opt.export) {
       for (const sg of g.segs) {
-        out.push(line(X(sg.p0), X(sg.p1), `stroke="#000" stroke-opacity="0" stroke-width="30" data-wall="${sg.wall.id}" style="cursor:pointer"`));
+        out.push(line(X(sg.p0), X(sg.p1), `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(30))}" data-wall="${sg.wall.id}" style="cursor:pointer"`));
       }
     }
   }

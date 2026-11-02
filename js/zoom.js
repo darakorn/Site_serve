@@ -1,5 +1,6 @@
 // Pinch / wheel / double-tap zoom for the room plan, so only the plan zooms and not the page.
 // The SVG inside `box` is CSS-transformed; `state` ({ k, x, y }) outlives re-renders of the SVG.
+// `onSettle` runs once a gesture ends, so the caller can redraw the plan for the new zoom.
 
 const MAX = 8, TAP_MOVE = 6, DOUBLE_TAP_MS = 300;
 
@@ -18,9 +19,9 @@ export function applyZoom(box, z) {
   box.closest('.plan-box')?.classList.toggle('zoomed', z.k > 1);
 }
 
-export function attachZoom(box, z) {
+export function attachZoom(box, z, onSettle = () => {}) {
   const pts = new Map();
-  let moved = false, travel = 0, lastTap = null;
+  let moved = false, travel = 0, lastTap = null, wheelTimer = 0;
 
   // Point relative to the SVG's untransformed top-left corner.
   const local = (cx, cy) => {
@@ -66,12 +67,14 @@ export function attachZoom(box, z) {
     else if (e.pointerType === 'touch') scrollBy(0, -dy);
   });
   const up = e => {
-    if (!pts.delete(e.pointerId) || pts.size || moved) return;
+    if (!pts.delete(e.pointerId) || pts.size) return;
+    if (moved) { onSettle(); return; }
     const now = Date.now(), p = { x: e.clientX, y: e.clientY };
     if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 30) {
       lastTap = null;
       if (z.k > 1) { z.k = 1; applyZoom(box, z); }
       else zoomAt(local(p.x, p.y), 2.5);
+      onSettle();
     } else lastTap = { t: now, ...p };
   };
   box.addEventListener('pointerup', up);
@@ -82,6 +85,8 @@ export function attachZoom(box, z) {
     if (z.k === 1 && e.deltaY > 0 && !e.ctrlKey) return; // let the page scroll past an unzoomed plan
     e.preventDefault();
     zoomAt(local(e.clientX, e.clientY), Math.exp(-e.deltaY * 0.002));
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(onSettle, 150);
   }, { passive: false });
 
   applyZoom(box, z);
