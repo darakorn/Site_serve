@@ -5,7 +5,7 @@ import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.5';
+const APP_VERSION = '1.0.6';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -179,6 +179,7 @@ function viewProject() {
     <h2>ส่งออก</h2>
     <a class="btn block" href="#/p/${P.id}/report">📄 รายงานแปลน + รูป (พิมพ์ / PDF)</a>
     <button class="btn block" data-act="export-dxf-all">📐 แปลนทุกห้องเป็น DXF (CAD)</button>
+    <button class="btn block" data-act="upload">☁️ อัปโหลดเข้า server (DATA)</button>
     <button class="btn block" data-act="backup">💾 สำรองโปรเจกต์เป็นไฟล์</button>
     <button class="btn ghost danger block" data-act="delete-project">ลบโปรเจกต์</button>
   </main>`;
@@ -412,7 +413,7 @@ async function shareOrDownload(blob, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
-async function exportPng(room) {
+function planPng(room) {
   const { g } = summaryParts(room);
   const svg = renderPlan(room, {
     export: true,
@@ -421,24 +422,82 @@ async function exportPng(room) {
     title: `${P.name} · ${room.name}`,
     subtitle: [g.closed ? fmtArea(g.area) : '', P.date].filter(Boolean).join(' · '),
   });
-  await shareOrDownload(await svgToPng(svg, 4), `${fileSafe(P.name)}-${fileSafe(room.name)}.png`);
+  return svgToPng(svg, 4);
 }
 
+async function exportPng(room) {
+  await shareOrDownload(await planPng(room), `${fileSafe(P.name)}-${fileSafe(room.name)}.png`);
+}
+
+const dxfBlob = rooms => new Blob([plansToDxf(rooms, { unit: P.unit, wallThickness: P.wallThickness })], { type: 'application/dxf' });
+
 function exportDxf(rooms, name) {
-  const blob = new Blob([plansToDxf(rooms, { unit: P.unit, wallThickness: P.wallThickness })], { type: 'application/dxf' });
-  return shareOrDownload(blob, `${name}.dxf`);
+  return shareOrDownload(dxfBlob(rooms), `${name}.dxf`);
 }
 
 const blobToDataURL = blob => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
 
-async function backup() {
+async function backupBlob() {
   await flush();
   const list = await db.photosOf(P.id);
   const data = {
     app: 'site-survey', version: 1, exportedAt: new Date().toISOString(), project: P,
     photos: await Promise.all(list.map(async ({ blob, ...rest }) => ({ ...rest, data: await blobToDataURL(blob) }))),
   };
-  await shareOrDownload(new Blob([JSON.stringify(data)], { type: 'application/json' }), `${fileSafe(P.name)}.survey.json`);
+  return new Blob([JSON.stringify(data)], { type: 'application/json' });
+}
+
+async function backup() {
+  await shareOrDownload(await backupBlob(), `${fileSafe(P.name)}.survey.json`);
+}
+
+// ---------- upload to the office server (server.py) ----------
+// Everything about the project goes to DATA/<survey date>/<project>/ on the server:
+// the backup .json, a DXF of all rooms, and per room its plan (PNG + DXF) and photos,
+// with a second copy of each annotated photo that has its lines drawn in.
+const seg = s => fileSafe(s).replace(/^\.+/, '') || '_';
+
+async function uploadProject(btn) {
+  try {
+    const r = await fetch('api/ping', { cache: 'no-store' });
+    if (!(await r.json()).ok) throw new Error();
+  } catch {
+    alert('ที่อยู่นี้ไม่มีระบบอัปโหลด ต้องเปิดแอปผ่าน server ของ office (server.py) เช่นผ่าน Tailscale');
+    return;
+  }
+  const base = `${seg(P.date || today())}/${seg(P.name)}`;
+  const files = [
+    [`${seg(P.name)}.survey.json`, backupBlob],
+    [`${seg(P.name)} ทุกห้อง.dxf`, () => dxfBlob(P.rooms)],
+  ];
+  const used = new Set();
+  for (const room of P.rooms) {
+    let dir = seg(room.name);
+    for (let k = 2; used.has(dir); k++) dir = `${seg(room.name)} (${k})`;
+    used.add(dir);
+    files.push([`${dir}/แปลน.png`, () => planPng(room)], [`${dir}/แปลน.dxf`, () => dxfBlob([room])]);
+    roomPhotos(room.id).forEach((p, i) => {
+      const name = `${dir}/รูป/${String(i + 1).padStart(2, '0')} ${seg(photoLabel(room, p))}`;
+      files.push([`${name}.jpg`, () => p.blob]);
+      if (p.annotations?.length) files.push([`${name} (มีเส้นระยะ).jpg`, async () => (await fetch(await renderAnnotated(p.blob, p.annotations, 4000))).blob()]);
+    });
+  }
+
+  const label = btn.textContent;
+  btn.disabled = true;
+  try {
+    for (const [k, [path, make]] of files.entries()) {
+      btn.textContent = `กำลังอัปโหลด ${k + 1}/${files.length}…`;
+      const res = await fetch(`api/upload?path=${encodeURIComponent(`${base}/${path}`)}`, { method: 'PUT', body: await make() });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+    }
+    alert(`อัปโหลดแล้ว ${files.length} ไฟล์\nไปที่ DATA/${base}`);
+  } catch (e) {
+    alert(`อัปโหลดไม่สำเร็จ (${e.message || e}) ลองใหม่อีกครั้ง ไฟล์ที่ขึ้นไปแล้วจะถูกเขียนทับ`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 async function importBackup(file) {
@@ -494,6 +553,7 @@ $app.addEventListener('click', async e => {
       }
       break;
     case 'backup': await backup(); break;
+    case 'upload': await uploadProject(t); break;
     case 'delete-room':
       if (confirm(`ลบห้อง "${room.name}" พร้อมรูปในห้อง?`)) {
         for (const p of roomPhotos(room.id)) { await db.deletePhoto(p.id); photos.delete(p.id); }
