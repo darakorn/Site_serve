@@ -5,11 +5,11 @@
 // footprints fill the gap. Walls and columns carry the ceiling height as entity thickness, so
 // AutoCAD shows them in 3D straight away. Door and window symbols sit on their own -Symbol layers.
 
-import { geometry, openingShapes, openingTags, chainBreaks, columnShape, segPoint, fmtLen, fmtArea } from './plan.js';
+import { geometry, openingShapes, openingTags, chainBreaks, columnShape, segPoint, shapePoints, fmtLen, fmtArea } from './plan.js';
 
 const LAYERS = [
   ['Wall', 7], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
-  ['Opening', 8], ['Column', 6], ['Dim', 1], ['Text', 2],
+  ['Opening', 8], ['Column', 6], ['Furniture', 4], ['Dim', 1], ['Text', 2],
 ];
 const DIM_OFF = 300, DIM_ROW = 300, TICK = 60, TXT = 120, NAME_TXT = 250, ROOM_GAP = 1500;
 
@@ -168,6 +168,15 @@ function drawRoom(w, room, ox, oy, unit, t) {
     }
   }
 
+  // Shapes drawn into the plan (counters, built-ins…)
+  for (const sh of room.shapes || []) {
+    const [a, b] = shapePoints(sh).map(P);
+    if (sh.type === 'line') w.line('Furniture', a, b);
+    else if (sh.type === 'rect') w.poly('Furniture', [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]);
+    else w.circle('Furniture', P({ x: +sh.x || 0, y: +sh.y || 0 }), (+sh.d || 0) * 5);
+    if (sh.label) w.text('Furniture', { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, TXT, sh.label);
+  }
+
   if (geo.segs.length >= 2 && geo.gap >= 1) w.line('Dim', P(geo.end), P(geo.pts[0]));
 
   const xs = geo.pts.map(p => P(p).x), ys = geo.pts.map(p => P(p).y);
@@ -185,7 +194,8 @@ export function plansToDxf(rooms, { unit, wallThickness } = {}) {
   for (const room of rooms) {
     const geo = geometry(room);
     if (!geo.segs.length) continue;
-    const xs = geo.extent.map(p => p.x * 10), ys = geo.extent.map(p => p.y * 10);
+    const fit = [...geo.extent, ...(room.shapes || []).flatMap(shapePoints)];
+    const xs = fit.map(p => p.x * 10), ys = fit.map(p => p.y * 10);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys);
     drawRoom(w, room, x - minX + t, minY, unit, t);
     x += maxX - minX + ROOM_GAP + 2 * t;

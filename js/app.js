@@ -1,11 +1,11 @@
 import { db } from './db.js';
-import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags } from './plan.js';
+import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.7';
+const APP_VERSION = '1.0.8';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -24,7 +24,9 @@ let P = null;             // project being edited
 let photos = new Map();   // photo id → record for P
 let view = { name: 'home' };
 let selectedWall = null;
-let selectedOp = null;    // door/window/column picked in the plan, highlighted in the form
+let selectedOp = null;    // door/window/column/shape picked in the plan, highlighted in the form
+let drawTool = null;      // 'line' | 'rect' | 'circle' while drawing on the plan
+let draft = null;         // shape being dragged out
 // Wall list shows one line per wall, with only the selected wall opened up. Kept per device.
 let wallsCollapsed = false;
 try { wallsCollapsed = localStorage.getItem('walls-collapsed') === '1'; } catch { /* storage unavailable */ }
@@ -206,7 +208,7 @@ function summaryHtml(room) {
   }
   return html;
 }
-const planSvg = room => renderPlan(room, { selected: selectedWall, selectedOp, photoCounts: photoCounts(room), unit: P.unit, zoom: zoomOf(room.id).k });
+const planSvg = room => renderPlan(room, { selected: selectedWall, selectedOp, draft, photoCounts: photoCounts(room), unit: P.unit, zoom: zoomOf(room.id).k });
 
 function refreshPlan() {
   const room = curRoom();
@@ -244,14 +246,31 @@ function columnRow(w, c) {
   </div>`;
 }
 
+// A door/window can be placed from the corner or from the far edge of an earlier opening on the
+// same wall (`ref` + `refGap`); its absolute `offset` is then kept in step by resolveRefs().
+function resolveRefs(w) {
+  w.openings.forEach((o, i) => {
+    if (!o.ref) return;
+    const r = w.openings.slice(0, i).find(x => x.id === o.ref);
+    if (!r) { delete o.ref; delete o.refGap; return; }
+    o.offset = Math.round(((+r.offset || 0) + (+r.width || 0) + (+o.refGap || 0)) * 10) / 10;
+  });
+}
+const opName = (tags, o) => tags.get(o.id) || OPEN_TYPES[o.type];
+
 function openingRow(w, o) {
   const at = `data-w="${w.id}" data-o="${o.id}"`;
   const idx = P && curRoom().walls.indexOf(w);
+  const tags = openingTags(curRoom()), before = w.openings.slice(0, w.openings.indexOf(o));
+  const ref = o.ref && before.find(x => x.id === o.ref);
   return `<div class="op${selectedOp === o.id ? ' picked' : ''}" id="op-${o.id}">
     <select data-f="op.type" ${at} aria-label="ชนิดช่องเปิด">${Object.entries(OPEN_TYPES).map(([k, l]) => `<option value="${k}"${o.type === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
     <button class="icon" data-act="del-op" ${at} aria-label="ลบ">✕</button>
-    ${kindRow(o, at, openingTags(curRoom()).get(o.id) || '')}
-    ${lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
+    ${kindRow(o, at, tags.get(o.id) || '')}
+    ${before.length ? `<label class="field op-ref"><span>วัดระยะจาก</span><select data-f="op.ref" ${at}>
+      <option value="">มุม ${cornerName(idx)}</option>
+      ${before.map(x => `<option value="${x.id}"${ref === x ? ' selected' : ''}>ขอบหลัง ${esc(opName(tags, x))}</option>`).join('')}</select></label>` : ''}
+    ${ref ? lenField(`ห่างจาก ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
     ${lenField('กว้าง', 'op.width', o.width, at)}
     ${lenField('สูง', 'op.height', o.height, at)}
   </div>`;
@@ -315,6 +334,82 @@ function wallCard(room, w, i) {
   </article>`;
 }
 
+// ---------- shapes drawn into the plan ----------
+const shapeName = sh => (sh.label ? `${sh.label} (${SHAPE_TYPES[sh.type]})` : SHAPE_TYPES[sh.type]);
+const SHAPE_FIELDS = {
+  line: [['x1', 'x เริ่ม'], ['y1', 'y เริ่ม'], ['x2', 'x ปลาย'], ['y2', 'y ปลาย']],
+  rect: [['x', 'x มุมบนซ้าย'], ['y', 'y มุมบนซ้าย'], ['w', 'กว้างแนว x'], ['h', 'ลึกแนว y']],
+  circle: [['x', 'x จุดศูนย์กลาง'], ['y', 'y จุดศูนย์กลาง'], ['d', 'เส้นผ่านศูนย์กลาง']],
+};
+
+function shapesCard(room) {
+  const list = room.shapes || [];
+  return `<section class="card shapes">
+    <h3>สิ่งของในแปลน <small>เคาน์เตอร์ ตู้ บิวท์อิน ฯลฯ</small></h3>
+    ${list.length ? '<p class="hint">x, y วัดจากมุม A — ไปทางขวาเป็น +x ลงล่างเป็น +y</p>' : '<p class="hint">กด "✏️ วาดในแปลน" ใต้แปลนแล้วลากนิ้ว หรือเพิ่มจากปุ่มด้านล่างแล้วกรอกขนาด</p>'}
+    ${list.map(sh => {
+      const at = `data-s="${sh.id}"`;
+      return `<div class="op shape${selectedOp === sh.id ? ' picked' : ''}" id="op-${sh.id}">
+        <input data-f="shape.label" ${at} value="${esc(sh.label || '')}" placeholder="ชื่อ เช่น เคาน์เตอร์ (${SHAPE_TYPES[sh.type]})">
+        <button class="icon" data-act="del-shape" ${at} aria-label="ลบ">✕</button>
+        <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}</div>
+      </div>`;
+    }).join('')}
+    <div class="btns">${Object.entries(SHAPE_TYPES).map(([k, l]) => `<button class="btn sm" data-act="add-shape" data-type="${k}">+ ${l}</button>`).join('')}</div>
+  </section>`;
+}
+
+const snap = v => Math.round(v / 5) * 5; // drawn shapes snap to 5 cm
+
+// Drag on the plan to draw the current tool's shape. Pinching (two fingers) cancels it.
+function attachDraw(box, room) {
+  let id = null, start = null;
+  const toPlan = e => {
+    const svg = box.querySelector('svg');
+    const [ox, oy, s] = (svg?.dataset.map || '0,0,1').split(',').map(Number);
+    const r = svg.getBoundingClientRect(), vb = svg.viewBox.baseVal;
+    // The viewBox is letterboxed inside the element (preserveAspectRatio meet).
+    const k = Math.min(r.width / vb.width, r.height / vb.height);
+    const vx = (e.clientX - r.left - (r.width - vb.width * k) / 2) / k, vy = (e.clientY - r.top - (r.height - vb.height * k) / 2) / k;
+    return { x: snap((vx - ox) / s), y: snap((vy - oy) / s) };
+  };
+  const shapeFrom = (a, b) => {
+    if (drawTool === 'rect') return { type: 'rect', x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+    if (drawTool === 'circle') return { type: 'circle', x: a.x, y: a.y, d: snap(2 * Math.hypot(b.x - a.x, b.y - a.y)) };
+    // Lines lock to horizontal / vertical / 45° when close.
+    let { x, y } = b;
+    const ang = Math.atan2(y - a.y, x - a.x), len = Math.hypot(x - a.x, y - a.y), step = Math.PI / 4;
+    const near = Math.round(ang / step) * step;
+    if (Math.abs(ang - near) < 0.1) { x = snap(a.x + Math.cos(near) * len); y = snap(a.y + Math.sin(near) * len); }
+    return { type: 'line', x1: a.x, y1: a.y, x2: x, y2: y };
+  };
+  box.addEventListener('pointerdown', e => {
+    if (!drawTool) return;
+    if (id !== null) { id = null; draft = null; refreshPlan(); return; } // second finger: it's a pinch
+    id = e.pointerId;
+    start = toPlan(e);
+  });
+  box.addEventListener('pointermove', e => {
+    if (!drawTool || e.pointerId !== id) return;
+    draft = shapeFrom(start, toPlan(e));
+    refreshPlan();
+  });
+  const end = e => {
+    if (e.pointerId !== id) return;
+    id = null;
+    const sh = draft;
+    draft = null;
+    const big = sh && Math.max(...['w', 'h', 'd'].map(k => +sh[k] || 0), Math.hypot((sh.x2 ?? 0) - (sh.x1 ?? 0), (sh.y2 ?? 0) - (sh.y1 ?? 0))) >= 5;
+    if (!big) { refreshPlan(); return; }
+    (room.shapes ||= []).push({ id: uid(), label: '', ...sh });
+    selectedOp = room.shapes.at(-1).id;
+    save();
+    rerender();
+  };
+  box.addEventListener('pointerup', end);
+  box.addEventListener('pointercancel', e => { if (e.pointerId === id) { id = null; draft = null; refreshPlan(); } });
+}
+
 function viewRoom() {
   const room = curRoom();
   $app.innerHTML = `${bar(`#/p/${P.id}`, room.name, '<button class="btn sm" data-act="export-png">PNG</button><button class="btn sm" data-act="export-dxf">DXF</button>')}
@@ -324,6 +419,10 @@ function viewRoom() {
         <div id="plan" class="plan">${planSvg(room)}</div>
         <button class="btn sm zoom-reset" data-act="zoom-reset" aria-label="ย่อกลับ">⤢ ย่อกลับ</button>
       </div>
+      <div class="draw-bar">${drawTool
+        ? `${Object.entries(SHAPE_TYPES).map(([k, l]) => `<button class="btn sm${drawTool === k ? ' on' : ''}" data-act="draw-tool" data-tool="${k}">${{ line: '╱', rect: '▭', circle: '◯' }[k]} ${l}</button>`).join('')}
+           <button class="btn sm primary" data-act="draw-off">เสร็จ</button>`
+        : '<button class="btn sm" data-act="draw-on">✏️ วาดในแปลน</button>'}</div>
       <div id="summary" class="summary">${summaryHtml(room)}</div>
     </section>
     <section class="card">
@@ -337,9 +436,12 @@ function viewRoom() {
       <button class="btn sm" data-act="toggle-walls">${wallsCollapsed ? '☰ แสดงทั้งหมด' : '≡ ย่อทั้งหมด'}</button></div>
     <div id="walls">${room.walls.map((w, i) => wallCard(room, w, i)).join('')}</div>
     <button class="btn primary block" data-act="add-wall">+ เพิ่มผนัง</button>
+    ${shapesCard(room)}
     <button class="btn ghost danger block" data-act="delete-room">ลบห้องนี้</button>
   </main>`;
-  attachZoom(document.getElementById('plan'), zoomOf(room.id), refreshPlan);
+  const box = document.getElementById('plan');
+  attachZoom(box, zoomOf(room.id), refreshPlan, () => !!drawTool);
+  attachDraw(box, room);
   return hydrateImages();
 }
 
@@ -366,6 +468,7 @@ function roomReport(r) {
     <h2>${esc(r.name)}</h2>
     <div class="r-plan">${renderPlan(r, { photoCounts: photoCounts(r), unit: P.unit })}</div>
     <p class="r-sum">${parts.map(([k, v]) => `${k} <b>${v}</b>`).join(' · ')}</p>
+    ${r.shapes?.length ? `<p>สิ่งของ: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
     <table class="r-table"><thead><tr><th>ผนัง</th><th>ยาว (${unitLabel()})</th><th>ประตู / หน้าต่าง / เสา</th><th>หมายเหตุ</th></tr></thead><tbody>
       ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${+w.bulge ? `<br><small>โค้ง ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
@@ -392,7 +495,8 @@ function viewReport() {
 // soft: just move the highlight (used while typing in a card, where a redraw would steal focus).
 async function selectWall(id, scroll, opId = null, soft = false) {
   if (view.name !== 'room') return;
-  const reopen = !soft && wallsCollapsed && selectedWall !== id;
+  // A tap focuses the collapsed card's button before its click, so check the card, not selectedWall.
+  const reopen = !soft && wallsCollapsed && !!document.getElementById('w-' + id)?.classList.contains('mini-wall');
   const repick = !soft && selectedOp !== opId;
   if (soft) $app.querySelectorAll('.op.picked').forEach(x => x.classList.remove('picked'));
   selectedWall = id;
@@ -570,6 +674,13 @@ async function importBackup(file) {
 $app.addEventListener('click', async e => {
   const t = e.target.closest('[data-act]');
   if (!t) {
+    const sh = e.target.closest('[data-shape]');
+    if (sh && !drawTool) {
+      selectedOp = sh.dataset.shape;
+      await rerender();
+      document.getElementById('op-' + selectedOp)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     const hit = e.target.closest('[data-wall]');
     if (hit) selectWall(hit.dataset.wall, true, hit.dataset.op || hit.dataset.col || null);
     return;
@@ -629,12 +740,36 @@ $app.addEventListener('click', async e => {
         rerender();
       }
       break;
-    case 'add-op':
-      w.openings.push({ id: uid(), type: t.dataset.type, offset: 30, width: 80, height: 200, ...OPEN_DEFAULTS[t.dataset.type] });
+    case 'add-op': {
+      // A second door/window is measured on from the last one by default.
+      const last = w.openings.at(-1);
+      w.openings.push({ id: uid(), type: t.dataset.type, offset: 30, width: 80, height: 200, ...OPEN_DEFAULTS[t.dataset.type], ...(last ? { ref: last.id, refGap: 50 } : {}) });
+      resolveRefs(w);
       save();
       rerender();
       break;
+    }
     case 'open-wall': await selectWall(w.id, true); break;
+    case 'draw-on': drawTool = 'rect'; await rerender(); break;
+    case 'draw-tool': drawTool = t.dataset.tool; await rerender(); break;
+    case 'draw-off': drawTool = null; draft = null; await rerender(); break;
+    case 'add-shape': {
+      // Dropped in the middle of the room at a typical size, then typed in exactly.
+      const g = geometry(room), xs = g.extent.map(p => p.x), ys = g.extent.map(p => p.y);
+      const cx = snap((Math.min(...xs) + Math.max(...xs)) / 2), cy = snap((Math.min(...ys) + Math.max(...ys)) / 2);
+      const base = { line: { x1: cx - 50, y1: cy, x2: cx + 50, y2: cy }, rect: { x: cx - 100, y: cy - 30, w: 200, h: 60 }, circle: { x: cx, y: cy, d: 60 } }[t.dataset.type];
+      (room.shapes ||= []).push({ id: uid(), type: t.dataset.type, label: '', ...base });
+      selectedOp = room.shapes.at(-1).id;
+      save();
+      await rerender();
+      document.getElementById('op-' + selectedOp)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      break;
+    }
+    case 'del-shape':
+      room.shapes = (room.shapes || []).filter(x => x.id !== t.dataset.s);
+      save();
+      rerender();
+      break;
     case 'toggle-walls':
       wallsCollapsed = !wallsCollapsed;
       try { localStorage.setItem('walls-collapsed', wallsCollapsed ? '1' : '0'); } catch { /* storage unavailable */ }
@@ -665,6 +800,8 @@ $app.addEventListener('click', async e => {
       w.turn = 0;
       w.customTurn = false;
       room.walls.splice(room.walls.indexOf(w) + 1, 0, second);
+      resolveRefs(w);
+      resolveRefs(second);
       save();
       await rerender();
       break;
@@ -681,6 +818,7 @@ $app.addEventListener('click', async e => {
       break;
     case 'del-op':
       w.openings = w.openings.filter(o => o.id !== t.dataset.o);
+      resolveRefs(w);
       save();
       rerender();
       break;
@@ -700,13 +838,20 @@ $app.addEventListener('input', e => {
   const [scope, prop] = key.split('.');
   const room = curRoom();
   const w = room?.walls.find(x => x.id === el.dataset.w);
-  const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c) }[scope];
+  const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c), shape: room?.shapes?.find(x => x.id === el.dataset.s) }[scope];
   if (!target) return;
   const v = parseFloat(el.value);
   target[prop] = el.type !== 'number' ? el.value : el.value === '' || isNaN(v) ? '' : el.hasAttribute('data-len') ? fromUnit(v, P.unit) : v;
+  if (scope === 'op' && prop === 'ref') {
+    // Switching the reference keeps the opening where it is; only the measured distance changes.
+    const r = w.openings.find(x => x.id === target.ref);
+    if (r) target.refGap = Math.max(0, Math.round(((+target.offset || 0) - (+r.offset || 0) - (+r.width || 0)) * 10) / 10);
+    else { delete target.ref; delete target.refGap; }
+  }
+  if (scope === 'op') resolveRefs(w);
   save();
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
-  if ((scope === 'op' && (prop === 'type' || prop === 'style')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();
+  if ((scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();
   else if (view.name === 'room') refreshPlan();
 });
 
@@ -728,7 +873,7 @@ $app.addEventListener('change', async e => {
 });
 
 $app.addEventListener('focusin', e => {
-  const card = e.target.closest('.wall');
+  const card = e.target.closest('.wall:not(.mini-wall)');
   if (card && selectedWall !== card.id.slice(2)) selectWall(card.id.slice(2), false, null, true);
 });
 

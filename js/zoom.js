@@ -19,7 +19,8 @@ export function applyZoom(box, z) {
   box.closest('.plan-box')?.classList.toggle('zoomed', z.k > 1);
 }
 
-export function attachZoom(box, z, onSettle = () => {}) {
+// isDrawing(): while true, one finger draws instead of panning (two fingers still zoom).
+export function attachZoom(box, z, onSettle = () => {}, isDrawing = () => false) {
   const pts = new Map();
   let moved = false, travel = 0, lastTap = null, wheelTimer = 0;
 
@@ -62,7 +63,7 @@ export function attachZoom(box, z, onSettle = () => {}) {
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     travel += Math.hypot(dx, dy);
     if (travel > TAP_MOVE) moved = true;
-    if (!moved) return;
+    if (!moved || isDrawing()) return;
     if (z.k > 1) { z.x += dx; z.y += dy; applyZoom(box, z); }
     else if (e.pointerType === 'touch') scrollBy(0, -dy);
   });

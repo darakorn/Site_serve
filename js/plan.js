@@ -168,6 +168,17 @@ export function segPoint(sg, x) {
   return { p: add(add(sg.p0, sg.u, x), arc.out, y), t, n: sg.inwardOf(t) };
 }
 
+// Things drawn into the plan (counters, built-ins…), in plan cm from corner A, y down:
+// line { x1, y1, x2, y2 }, rect { x, y, w, h }, circle { x, y (centre), d (diameter) }; each may have a label.
+export const SHAPE_TYPES = { line: 'เส้นตรง', rect: 'สี่เหลี่ยม', circle: 'วงกลม' };
+export function shapePoints(sh) {
+  if (sh.type === 'line') return [{ x: +sh.x1 || 0, y: +sh.y1 || 0 }, { x: +sh.x2 || 0, y: +sh.y2 || 0 }];
+  if (sh.type === 'rect') return [{ x: +sh.x || 0, y: +sh.y || 0 }, { x: (+sh.x || 0) + (+sh.w || 0), y: (+sh.y || 0) + (+sh.h || 0) }];
+  const r = (+sh.d || 0) / 2;
+  return [{ x: (+sh.x || 0) - r, y: (+sh.y || 0) - r }, { x: (+sh.x || 0) + r, y: (+sh.y || 0) + r }];
+}
+const shapeCenter = sh => mid(...shapePoints(sh));
+
 export function geometry(room) {
   const pts = [{ x: 0, y: 0 }];
   const segs = [];
@@ -243,7 +254,7 @@ function readableAngle(u) {
 }
 
 /**
- * opt: { mini, selected (wall id), selectedOp (opening id), photoCounts {wallId: n}, export, title, subtitle, unit,
+ * opt: { mini, selected (wall id), selectedOp (opening / column / shape id), draft (shape being drawn), photoCounts {wallId: n}, export, title, subtitle, unit,
  *        zoom (CSS zoom the SVG is shown at: strokes, text and offsets shrink by it so they keep
  *        their on-screen size while the walls grow) }
  */
@@ -252,6 +263,7 @@ export function renderPlan(room, opt = {}) {
   const mini = !!opt.mini;
   const svgOpen = (h, extra = '') =>
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VW} ${h}"${opt.export ? ` width="${VW}" height="${h}"` : ''} font-family="${FONT}"${extra}>`;
+  const shapes = [...(room.shapes || []), ...(opt.draft ? [{ ...opt.draft, id: '__draft' }] : [])];
   if (!g.segs.length) {
     return `${svgOpen(120)}<text x="${VW / 2}" y="64" text-anchor="middle" fill="${DIM}" font-size="14">ยังไม่มีผนัง</text></svg>`;
   }
@@ -259,7 +271,8 @@ export function renderPlan(room, opt = {}) {
   const head = opt.export ? 46 : 0;
   const pad = mini ? 10 : 56;
   const maxH = mini ? 280 : 440;
-  const xs = g.extent.map(p => p.x), ys = g.extent.map(p => p.y);
+  const fit = [...g.extent, ...shapes.flatMap(shapePoints)];
+  const xs = fit.map(p => p.x), ys = fit.map(p => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   const bw = Math.max(Math.max(...xs) - minX, 1), bh = Math.max(Math.max(...ys) - minY, 1);
   const s = Math.min((VW - 2 * pad) / bw, (maxH - 2 * pad) / bh);
@@ -315,6 +328,26 @@ export function renderPlan(room, opt = {}) {
         out.push(line(a, b, `stroke="${INK}" stroke-width="${f(Z(1.2))}" ${dash(4, 3)}`));
       }
     }
+  }
+
+  // Drawn shapes (counters etc.), under the labels
+  const SHAPE = '#4f6a8f', shapeLabels = [];
+  for (const sh of shapes) {
+    const on = sh.id === opt.selectedOp, draft = sh.id === '__draft';
+    const tag = !mini && !opt.export && !draft ? ` data-shape="${sh.id}" style="cursor:pointer"` : '';
+    const look = `stroke="${on ? ACC : SHAPE}" stroke-width="${f(Z(on ? 2 : 1.4))}"${draft ? ' ' + dash(4, 3) : ''}`;
+    if (sh.type === 'line') {
+      const [a, b] = shapePoints(sh).map(X);
+      out.push(line(a, b, `${look} stroke-linecap="round"`));
+      if (tag) out.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(16))}"${tag}`));
+    } else if (sh.type === 'rect') {
+      const [a, b] = shapePoints(sh).map(X);
+      out.push(`<rect x="${f(Math.min(a.x, b.x))}" y="${f(Math.min(a.y, b.y))}" width="${f(Math.abs(b.x - a.x))}" height="${f(Math.abs(b.y - a.y))}" fill="${SHAPE}" fill-opacity="0.12" ${look}${tag}/>`);
+    } else {
+      const c = X({ x: +sh.x || 0, y: +sh.y || 0 });
+      out.push(`<circle cx="${f(c.x)}" cy="${f(c.y)}" r="${f(Math.max(((+sh.d || 0) / 2) * s, Z(1)))}" fill="${SHAPE}" fill-opacity="0.12" ${look}${tag}/>`);
+    }
+    if (sh.label && !mini) shapeLabels.push({ p: X(shapeCenter(sh)), label: sh.label, on });
   }
 
   // Columns
@@ -388,6 +421,8 @@ export function renderPlan(room, opt = {}) {
       text(1 + 1 / (1 + sg.len), add(mid(da, db), o, Z(8)), lenStr, 12, ang, `font-weight="600" fill="${INK}" ${halo}`);
     }
 
+    for (const { p, label: str, on } of shapeLabels) text(on ? 0 : 2.8, p, str, 9, 0, `fill="${on ? ACC : SHAPE}" font-weight="600" ${halo}`);
+
     // Door / window tags in a small box just inside the wall
     for (const { p, tag, sel: on } of tagSpots) {
       const fs = Z(9), w = tag.length * fs * 0.62 + Z(6), h = fs * 1.5;
@@ -429,7 +464,8 @@ export function renderPlan(room, opt = {}) {
     }
   }
 
-  return `${svgOpen(VH)}${out.join('')}</svg>`;
+  // Plan ↔ SVG mapping, so a tap or a drag on the plan can be turned back into room cm.
+  return `${svgOpen(VH, mini || opt.export ? '' : ` data-map="${f(ox)},${f(oy)},${s}"`)}${out.join('')}</svg>`;
 }
 
 export function svgToPng(svg, scale = 3) {
