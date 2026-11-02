@@ -1,11 +1,11 @@
 import { db } from './db.js';
-import { geometry, renderPlan, svgToPng, fmtM, fmtArea, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle } from './plan.js';
+import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -101,6 +101,10 @@ function field(label, key, val, type = 'text', extra = '') {
     : `<input type="${type}" data-f="${key}" value="${esc(val)}"${num} ${extra}>`;
   return `<label class="field"><span>${label}</span>${input}</label>`;
 }
+// A length stored in cm, shown and typed in the project's unit.
+const unitLabel = () => UNITS[unitOf(P?.unit)].label;
+const lenField = (label, key, cm, extra = '') => field(`${label} (${unitLabel()})`, key, toUnit(cm, P?.unit), 'number', `data-len ${extra}`);
+const UNIT_NAMES = { mm: 'มิลลิเมตร (มม.)', cm: 'เซนติเมตร (ซม.)', m: 'เมตร (ม.)' };
 const bar = (back, title, right = '') =>
   `<header class="bar${view.name === 'report' ? ' noprint' : ''}">${back ? `<a class="back" href="${back}" aria-label="กลับ">‹</a>` : ''}<h1>${esc(title)}</h1>${right}</header>`;
 
@@ -149,6 +153,8 @@ function viewProject() {
       ${field('ลูกค้า', 'project.client', P.client)}
       ${field('สถานที่', 'project.site', P.site)}
       <div class="row">${field('วันที่สำรวจ', 'project.date', P.date, 'date')}${field('ผู้สำรวจ', 'project.surveyor', P.surveyor)}</div>
+      <label class="field"><span>หน่วยวัดระยะ (ใช้กรอกและแสดงในแปลน)</span><select data-f="project.unit">
+        ${Object.entries(UNIT_NAMES).map(([k, l]) => `<option value="${k}"${unitOf(P.unit) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
       ${field('หมายเหตุ', 'project.note', P.note, 'textarea')}
     </section>
     <h2>ห้อง (${P.rooms.length})</h2>
@@ -163,8 +169,8 @@ function viewProject() {
       <h3>เพิ่มห้อง</h3>
       <label class="field"><span>ชื่อห้อง</span><input id="nr-name" placeholder="เช่น ห้องนอน 1"></label>
       <div class="row">
-        <label class="field"><span>กว้าง (ซม.)</span><input id="nr-w" type="number" inputmode="decimal" step="any"></label>
-        <label class="field"><span>ยาว (ซม.)</span><input id="nr-l" type="number" inputmode="decimal" step="any"></label>
+        <label class="field"><span>กว้าง (${unitLabel()})</span><input id="nr-w" type="number" inputmode="decimal" step="any"></label>
+        <label class="field"><span>ยาว (${unitLabel()})</span><input id="nr-l" type="number" inputmode="decimal" step="any"></label>
       </div>
       <p class="hint">ใส่กว้าง × ยาว เพื่อสร้างห้องสี่เหลี่ยมทันที หรือเว้นว่างไว้แล้วค่อยใส่ผนังทีละด้าน</p>
       <button class="btn primary block" data-act="add-room">+ เพิ่มห้อง</button>
@@ -189,12 +195,12 @@ function summaryHtml(room) {
   const { g, parts } = summaryParts(room);
   let html = parts.map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('');
   if (room.walls.length >= 2 && g.gap >= 1) {
-    html += `<div class="warn"><span>⚠ ห้องยังไม่ปิด ปลายผนังสุดท้ายห่างจากมุม A <b>${Math.round(g.gap)} ซม.</b> ถ้าห่างนิดเดียวอาจเป็นความคลาดเคลื่อนตอนวัด</span>
+    html += `<div class="warn"><span>⚠ ห้องยังไม่ปิด ปลายผนังสุดท้ายห่างจากมุม A <b>${fmtLen(g.gap, P.unit)} ${unitLabel()}</b> ถ้าห่างนิดเดียวอาจเป็นความคลาดเคลื่อนตอนวัด</span>
       <button class="btn sm" data-act="close-room">เพิ่มผนังปิดห้องให้</button></div>`;
   }
   return html;
 }
-const planSvg = room => renderPlan(room, { selected: selectedWall, photoCounts: photoCounts(room) });
+const planSvg = room => renderPlan(room, { selected: selectedWall, photoCounts: photoCounts(room), unit: P.unit });
 
 function refreshPlan() {
   const room = curRoom();
@@ -221,9 +227,9 @@ function openingRow(w, o) {
     <select data-f="op.type" ${at} aria-label="ชนิดช่องเปิด">${Object.entries(OPEN_TYPES).map(([k, l]) => `<option value="${k}"${o.type === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
     <button class="icon" data-act="del-op" ${at} aria-label="ลบ">✕</button>
     ${kindRow(o, at)}
-    ${field(`ห่างจากมุม ${cornerName(idx)}`, 'op.offset', o.offset, 'number', at)}
-    ${field('กว้าง', 'op.width', o.width, 'number', at)}
-    ${field('สูง', 'op.height', o.height, 'number', at)}
+    ${lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
+    ${lenField('กว้าง', 'op.width', o.width, at)}
+    ${lenField('สูง', 'op.height', o.height, at)}
   </div>`;
 }
 
@@ -237,7 +243,7 @@ function wallCard(room, w, i) {
       <button class="icon" data-act="del-wall" data-w="${w.id}" aria-label="ลบผนัง">✕</button>
     </div>
     <div class="row">
-      ${field('ความยาว (ซม.)', 'wall.length', w.length, 'number', `data-w="${w.id}"`)}
+      ${lenField('ความยาว', 'wall.length', w.length, `data-w="${w.id}"`)}
       ${last ? '' : `<label class="field"><span>ที่มุม ${cornerName(i + 1)}</span><select data-turn="${w.id}">
         ${TURNS.map(([v, l]) => `<option value="${v}"${known && v === w.turn ? ' selected' : ''}>${l}</option>`).join('')}
         <option value="custom"${known ? '' : ' selected'}>กำหนดองศาเอง…</option></select></label>`}
@@ -266,7 +272,7 @@ function viewRoom() {
       <div id="summary" class="summary">${summaryHtml(room)}</div>
     </section>
     <section class="card">
-      <div class="row">${field('ชื่อห้อง', 'room.name', room.name)}${field('ความสูงฝ้า (ซม.)', 'room.height', room.height, 'number')}</div>
+      <div class="row">${field('ชื่อห้อง', 'room.name', room.name)}${lenField('ความสูงฝ้า', 'room.height', room.height)}</div>
       ${field('หมายเหตุห้อง', 'room.note', room.note, 'textarea')}
       <small>รูปภาพรวม / มุมห้อง</small>
       ${photoStrip(room.id, null)}
@@ -283,7 +289,7 @@ function viewRoom() {
 function fmtOpening(o, wallIndex) {
   const st = openStyle(o);
   const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}` : '';
-  return `${OPEN_TYPES[o.type]}${kind} ${fmtM(o.width)}×${fmtM(o.height)} ม. (ห่างมุม ${cornerName(wallIndex)} ${fmtM(o.offset)})`;
+  return `${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)})`;
 }
 
 function roomReport(r) {
@@ -292,11 +298,11 @@ function roomReport(r) {
   const list = roomPhotos(r.id);
   return `<section class="r-room">
     <h2>${esc(r.name)}</h2>
-    <div class="r-plan">${renderPlan(r, { photoCounts: photoCounts(r) })}</div>
+    <div class="r-plan">${renderPlan(r, { photoCounts: photoCounts(r), unit: P.unit })}</div>
     <p class="r-sum">${parts.map(([k, v]) => `${k} <b>${v}</b>`).join(' · ')}</p>
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
-    <table class="r-table"><thead><tr><th>ผนัง</th><th>ยาว (ม.)</th><th>ประตู / หน้าต่าง</th><th>หมายเหตุ</th></tr></thead><tbody>
-      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtM(w.length)}</td><td>${w.openings.map(o => fmtOpening(o, i)).join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
+    <table class="r-table"><thead><tr><th>ผนัง</th><th>ยาว (${unitLabel()})</th><th>ประตู / หน้าต่าง</th><th>หมายเหตุ</th></tr></thead><tbody>
+      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}</td><td>${w.openings.map(o => fmtOpening(o, i)).join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
     </tbody></table>
     ${list.length ? `<div class="r-photos">${list.map(p => `<figure><img data-img="${p.id}" data-size="1100" alt=""><figcaption>${esc(photoLabel(r, p))}</figcaption></figure>`).join('')}</div>` : ''}
   </section>`;
@@ -351,6 +357,7 @@ function openPhoto(id) {
   const room = P.rooms.find(r => r.id === ph.roomId);
   openAnnotator(ph, {
     title: room ? `${room.name} · ${photoLabel(room, { ...ph, note: '' })}` : '',
+    unitLabel: unitLabel(),
     async onSave(anns, note) {
       ph.annotations = anns;
       ph.note = note;
@@ -386,6 +393,7 @@ async function exportPng(room) {
   const { g } = summaryParts(room);
   const svg = renderPlan(room, {
     export: true,
+    unit: P.unit,
     photoCounts: {},
     title: `${P.name} · ${room.name}`,
     subtitle: [g.closed ? fmtArea(g.area) : '', P.date].filter(Boolean).join(' · '),
@@ -394,7 +402,7 @@ async function exportPng(room) {
 }
 
 function exportDxf(rooms, name) {
-  const blob = new Blob([plansToDxf(rooms)], { type: 'application/dxf' });
+  const blob = new Blob([plansToDxf(rooms, P.unit)], { type: 'application/dxf' });
   return shareOrDownload(blob, `${name}.dxf`);
 }
 
@@ -445,7 +453,7 @@ $app.addEventListener('click', async e => {
     }
     case 'add-room': {
       const name = document.getElementById('nr-name').value.trim() || `ห้อง ${P.rooms.length + 1}`;
-      const W = parseFloat(document.getElementById('nr-w').value), L = parseFloat(document.getElementById('nr-l').value);
+      const W = fromUnit(parseFloat(document.getElementById('nr-w').value), P.unit), L = fromUnit(parseFloat(document.getElementById('nr-l').value), P.unit);
       const walls = W > 0 && L > 0 ? [W, L, W, L].map(length => ({ ...newWall(), length })) : [newWall()];
       const r = { id: uid(), name, height: '', note: '', walls };
       P.rooms.push(r);
@@ -516,10 +524,11 @@ $app.addEventListener('input', e => {
   const w = room?.walls.find(x => x.id === el.dataset.w);
   const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o) }[scope];
   if (!target) return;
-  target[prop] = el.type === 'number' ? (el.value === '' ? '' : parseFloat(el.value)) : el.value;
+  const v = parseFloat(el.value);
+  target[prop] = el.type !== 'number' ? el.value : el.value === '' || isNaN(v) ? '' : el.hasAttribute('data-len') ? fromUnit(v, P.unit) : v;
   save();
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
-  if (scope === 'op' && prop === 'type') rerender();
+  if ((scope === 'op' && prop === 'type') || (scope === 'project' && prop === 'unit')) rerender();
   else if (view.name === 'room') refreshPlan();
 });
 

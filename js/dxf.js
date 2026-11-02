@@ -2,7 +2,7 @@
 // Drawing units are millimetres; the plan's y-down centimetres are flipped to CAD's y-up.
 // Walls are single lines on the measured inside face, broken at doors, windows and openings.
 
-import { geometry, openingShapes, fmtM, fmtArea } from './plan.js';
+import { geometry, openingShapes, fmtLen, fmtArea } from './plan.js';
 
 const LAYERS = [['WALL', 7], ['DOOR', 3], ['WINDOW', 5], ['OPENING', 8], ['DIM', 1], ['TEXT', 2]];
 const DIM_OFF = 300, TICK = 60, TXT = 120, NAME_TXT = 250, WIN_DEPTH = 100, ROOM_GAP = 1500;
@@ -43,7 +43,7 @@ function writer() {
 }
 
 // Draws one room with its corner A at (ox, oy) in CAD space.
-function drawRoom(w, room, ox, oy) {
+function drawRoom(w, room, ox, oy, unit) {
   const geo = geometry(room);
   const P = p => ({ x: ox + p.x * 10, y: oy - p.y * 10 });
   const sign = geo.cw ? 1 : -1;
@@ -85,7 +85,7 @@ function drawRoom(w, room, ox, oy) {
     }
     if (at < len) w.line('WALL', add(A, u, at), B);
 
-    // Dimension outside the wall: extension lines, dimension line, ticks, text in metres.
+    // Dimension outside the wall: extension lines, dimension line, ticks, text in the project's unit.
     const o = { x: -n.x, y: -n.y };
     const da = add(A, o, DIM_OFF), db = add(B, o, DIM_OFF);
     w.line('DIM', add(A, o, 50), add(A, o, DIM_OFF + 60));
@@ -93,7 +93,7 @@ function drawRoom(w, room, ox, oy) {
     w.line('DIM', da, db);
     const tick = { x: (u.x + o.x) * Math.SQRT1_2, y: (u.y + o.y) * Math.SQRT1_2 };
     for (const p of [da, db]) w.line('DIM', add(p, tick, -TICK / 2), add(p, tick, TICK / 2));
-    w.text('DIM', add(add(da, u, len / 2), o, TXT), TXT, fmtM(sg.len), readable(deg(u)));
+    w.text('DIM', add(add(da, u, len / 2), o, TXT), TXT, fmtLen(sg.len, unit), readable(deg(u)));
   }
 
   if (geo.segs.length >= 2 && geo.gap >= 1) w.line('DIM', P(geo.end), P(geo.pts[0]));
@@ -105,7 +105,7 @@ function drawRoom(w, room, ox, oy) {
 }
 
 // Rooms are laid out left to right so a whole project lands in one file.
-export function plansToDxf(rooms) {
+export function plansToDxf(rooms, unit) {
   const w = writer();
   let x = 0;
   for (const room of rooms) {
@@ -113,7 +113,7 @@ export function plansToDxf(rooms) {
     if (!geo.segs.length) continue;
     const xs = geo.pts.map(p => p.x * 10), ys = geo.pts.map(p => p.y * 10);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys);
-    drawRoom(w, room, x - minX, minY);
+    drawRoom(w, room, x - minX, minY, unit);
     x += maxX - minX + ROOM_GAP;
   }
 

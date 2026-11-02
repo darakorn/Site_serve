@@ -11,6 +11,23 @@ const RED = '#d93025';
 const FONT = "'Sarabun','Noto Sans Thai','Leelawadee UI',system-ui,sans-serif";
 
 export const fmtM = cm => ((+cm || 0) / 100).toFixed(2);
+
+// Lengths are stored in cm; a project picks the unit used for typing and for plan labels.
+// k: factor from cm, fix: decimals on plan labels, input: decimals kept when showing a value in a form.
+export const UNITS = {
+  mm: { k: 10, label: 'มม.', fix: 0, input: 1 },
+  cm: { k: 1, label: 'ซม.', fix: 0, input: 2 },
+  m: { k: 0.01, label: 'ม.', fix: 2, input: 4 },
+};
+export const unitOf = u => (UNITS[u] ? u : 'cm');
+export const toUnit = (cm, u) => (cm === '' || cm == null ? '' : +((+cm || 0) * UNITS[unitOf(u)].k).toFixed(UNITS[unitOf(u)].input));
+export const fromUnit = (v, u) => +(v / UNITS[unitOf(u)].k).toFixed(3);
+export function fmtLen(cm, u) {
+  const { k, fix } = UNITS[unitOf(u)], v = (+cm || 0) * k;
+  // cm keeps a half-centimetre when one was measured; the others use a fixed format.
+  const r = d => (Math.round(v * 10 ** d + 1e-9) / 10 ** d).toFixed(d); // 3.505 → 3.51, not toFixed's 3.50
+  return unitOf(u) === 'cm' && Math.round(v) !== +r(1) ? r(1) : r(fix);
+}
 export const fmtArea = cm2 => (cm2 / 10000).toFixed(2) + ' ตร.ม.';
 export const cornerName = i => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : '');
 export const normAngle = a => Math.round(((((a % 360) + 540) % 360) - 180) * 10) / 10;
@@ -144,7 +161,7 @@ function readableAngle(u) {
 }
 
 /**
- * opt: { mini, selected (wall id), photoCounts {wallId: n}, export, title, subtitle }
+ * opt: { mini, selected (wall id), photoCounts {wallId: n}, export, title, subtitle, unit }
  */
 export function renderPlan(room, opt = {}) {
   const g = geometry(room);
@@ -209,7 +226,7 @@ export function renderPlan(room, opt = {}) {
       }
       if (!mini) {
         const m = add(mid(a, b), n, -10);
-        out.push(`<text x="${f(m.x)}" y="${f(m.y)}" transform="rotate(${f(readableAngle(u))} ${f(m.x)} ${f(m.y)})" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="${DIM}" ${halo}>${fmtM(w)}</text>`);
+        out.push(`<text x="${f(m.x)}" y="${f(m.y)}" transform="rotate(${f(readableAngle(u))} ${f(m.x)} ${f(m.y)})" text-anchor="middle" dominant-baseline="middle" font-size="9" fill="${DIM}" ${halo}>${fmtLen(w, opt.unit)}</text>`);
       }
     }
   }
@@ -225,7 +242,7 @@ export function renderPlan(room, opt = {}) {
       out.push(line(add(a, o, 6), add(a, o, d + 4), thin), line(add(b, o, 6), add(b, o, d + 4), thin), line(da, db, thin));
       for (const p of [da, db]) out.push(line(add(add(p, sg.u, -3), o, 3), add(add(p, sg.u, 3), o, -3), `stroke="${INK}" stroke-width="1.2"`));
       const t = add(mid(da, db), o, 8);
-      out.push(`<text x="${f(t.x)}" y="${f(t.y)}" transform="rotate(${f(readableAngle(sg.u))} ${f(t.x)} ${f(t.y)})" text-anchor="middle" dominant-baseline="middle" font-size="12" font-weight="600" fill="${INK}" ${halo}>${fmtM(sg.len)}</text>`);
+      out.push(`<text x="${f(t.x)}" y="${f(t.y)}" transform="rotate(${f(readableAngle(sg.u))} ${f(t.x)} ${f(t.y)})" text-anchor="middle" dominant-baseline="middle" font-size="12" font-weight="600" fill="${INK}" ${halo}>${fmtLen(sg.len, opt.unit)}</text>`);
 
       const isSel = sel === sg;
       const c = add(mid(a, b), n, 18);
@@ -252,7 +269,7 @@ export function renderPlan(room, opt = {}) {
     if (g.segs.length >= 2 && g.gap >= 1) {
       const a = X(g.end), b = X(g.pts[0]), m = mid(a, b);
       out.push(line(a, b, `stroke="${RED}" stroke-width="1.5" stroke-dasharray="5 4"`));
-      out.push(`<text x="${f(m.x)}" y="${f(m.y)}" text-anchor="middle" dominant-baseline="central" font-size="11" fill="${RED}" ${halo}>ห่าง ${Math.round(g.gap)} ซม.</text>`);
+      out.push(`<text x="${f(m.x)}" y="${f(m.y)}" text-anchor="middle" dominant-baseline="central" font-size="11" fill="${RED}" ${halo}>ห่าง ${fmtLen(g.gap, opt.unit)} ${UNITS[unitOf(opt.unit)].label}</text>`);
     }
 
     if (!opt.export) {

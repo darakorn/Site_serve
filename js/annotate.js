@@ -91,9 +91,10 @@ export async function renderAnnotated(blob, anns, maxW) {
   return c.toDataURL('image/jpeg', 0.85);
 }
 
-const withUnit = t => (/^\d+(\.\d+)?$/.test(t.trim()) ? `${t.trim()} ซม.` : t.trim());
 
-export async function openAnnotator(photo, { title = '', onSave, onDelete }) {
+export async function openAnnotator(photo, { title = '', unitLabel = 'ซม.', onSave, onDelete }) {
+  // A bare number gets the project's unit; anything else is kept as typed.
+  const withUnit = t => (/^\d+(\.\d+)?$/.test(t.trim()) ? `${t.trim()} ${unitLabel}` : t.trim());
   const anns = structuredClone(photo.annotations || []);
   const ov = document.createElement('div');
   ov.className = 'annot';
@@ -202,7 +203,7 @@ export async function openAnnotator(photo, { title = '', onSave, onDelete }) {
       const r = canvas.getBoundingClientRect();
       if (Math.hypot((d.x2 - d.x1) * r.width, (d.y2 - d.y1) * r.height) > 14) {
         anns.push(d); draw();
-        const t = await ask('ระยะ (เช่น 120 หรือ 1.20 ม.)');
+        const t = await ask(`ระยะ (${unitLabel})`);
         if (t === null) anns.pop();
         else { d.text = withUnit(t); dirty = true; }
       }
