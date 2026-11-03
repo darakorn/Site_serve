@@ -8,6 +8,8 @@ const INK = '#222';
 const DIM = '#777';
 const ACC = '#1f6f5c';
 const GLASS = '#d6ecf8', GLASS_LINE = '#2f86c0';
+const CLEAR = '#b4540a';   // a free-standing item measured off the walls
+const DIMLINE = '#2c5aa0'; // dimensions drawn on the plan
 const RED = '#d93025';
 const FONT = "'Sarabun','Noto Sans Thai','Leelawadee UI',system-ui,sans-serif";
 
@@ -238,6 +240,56 @@ export function shapePoints(sh) {
 }
 const shapeCenter = sh => mid(...shapePoints(sh));
 
+// Bounding box of something placed in the room — a free-standing column or a drawn rectangle /
+// circle — for measuring it off the walls. Lines have none.
+export function itemBox(it) {
+  if (it.shape === 'rect' || it.shape === 'round') {
+    const w = +it.width || 0, d = it.shape === 'round' ? w : +it.depth || 0;
+    return { x0: (+it.x || 0) - w / 2, y0: (+it.y || 0) - d / 2, x1: (+it.x || 0) + w / 2, y1: (+it.y || 0) + d / 2 };
+  }
+  if (it.type === 'rect' || it.type === 'circle') {
+    const [a, b] = shapePoints(it);
+    return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+  }
+  return null;
+}
+
+// How far a box stands off the walls: from the middle of each side straight out (left, right,
+// up, down on the plan) to the inside face of the first wall it meets. Returns
+// [{ side, from, to, dist }] for the sides that reach a wall; plan cm.
+export function clearances(g, box) {
+  const faces = [];
+  for (const sg of g.segs) {
+    if (sg.gap || !sg.len) continue;
+    const steps = sg.arc ? 24 : 1, pts = Array.from({ length: steps + 1 }, (_, i) => segPoint(sg, (sg.len * i) / steps).p);
+    for (let i = 0; i < steps; i++) faces.push([pts[i], pts[i + 1]]);
+  }
+  const cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+  const rays = [
+    ['left', { x: box.x0, y: cy }, { x: -1, y: 0 }], ['right', { x: box.x1, y: cy }, { x: 1, y: 0 }],
+    ['up', { x: cx, y: box.y0 }, { x: 0, y: -1 }], ['down', { x: cx, y: box.y1 }, { x: 0, y: 1 }],
+  ];
+  const out = [];
+  for (const [side, from, d] of rays) {
+    let best = Infinity;
+    for (const [a, b] of faces) {
+      const e = { x: b.x - a.x, y: b.y - a.y }, den = d.x * e.y - d.y * e.x;
+      if (Math.abs(den) < 1e-9) continue;
+      const w = { x: a.x - from.x, y: a.y - from.y };
+      const t = (w.x * e.y - w.y * e.x) / den, k = (w.x * d.y - w.y * d.x) / den;
+      if (t > 0.01 && k >= -1e-6 && k <= 1 + 1e-6) best = Math.min(best, t);
+    }
+    if (best < Infinity) out.push({ side, from, to: add(from, d, best), dist: best });
+  }
+  return out;
+}
+
+// The nearer wall across and the nearer wall up/down: the two that place an item.
+export function nearestClearances(list) {
+  const pick = sides => list.filter(c => sides.includes(c.side)).sort((a, b) => a.dist - b.dist)[0];
+  return [pick(['left', 'right']), pick(['up', 'down'])].filter(Boolean);
+}
+
 export function geometry(room) {
   const pts = [{ x: 0, y: 0 }];
   const segs = [];
@@ -386,7 +438,8 @@ export function renderPlan(room, opt = {}) {
   const head = opt.export ? 46 : 0;
   const pad = mini ? 10 : 56;
   const maxH = mini ? 280 : 440;
-  const fit = [...g.extent, ...(g.segs.length ? [] : [{ x: -50, y: -50 }, { x: 400, y: 300 }]), ...(room.shapes || []).flatMap(shapePoints), ...(room.columns || []).map(c => ({ x: +c.x || 0, y: +c.y || 0 }))];
+  const fit = [...g.extent, ...(g.segs.length ? [] : [{ x: -50, y: -50 }, { x: 400, y: 300 }]), ...(room.shapes || []).flatMap(shapePoints), ...(room.columns || []).map(c => ({ x: +c.x || 0, y: +c.y || 0 })),
+    ...(room.dims || []).flatMap(d => [{ x: +d.x1 || 0, y: +d.y1 || 0 }, { x: +d.x2 || 0, y: +d.y2 || 0 }])];
   const xs = fit.map(p => p.x), ys = fit.map(p => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   const bw = Math.max(Math.max(...xs) - minX, 1), bh = Math.max(Math.max(...ys) - minY, 1);
@@ -572,6 +625,33 @@ export function renderPlan(room, opt = {}) {
     }
 
     for (const { p, label: str, on } of shapeLabels) text(on ? 0 : 2.8, p, str, 9, 0, `fill="${on ? ACC : SHAPE}" font-weight="600" ${halo}`);
+
+    // A dimension between two plan points: the line, a tick at each end, the length above it.
+    const dimLine = (p, q, color, prio, attrs = '') => {
+      const a = X(p), b = X(q), len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (len < Z(3)) return;
+      const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len }, nv = { x: -u.y, y: u.x };
+      const tk = c => line(add(add(c, u, -Z(3)), nv, Z(3)), add(add(c, u, Z(3)), nv, -Z(3)), `stroke="${color}" stroke-width="${f(Z(1.1))}"`);
+      out.push(line(a, b, `stroke="${color}" stroke-width="${f(Z(0.8))}"${attrs}`), tk(a), tk(b));
+      // Text on the side readableAngle turns it to: above the line as it reads.
+      const ang = readableAngle(u), up = Math.abs(Math.atan2(u.y, u.x)) > Math.PI / 2 ? 1 : -1;
+      text(prio, add(mid(a, b), nv, up * Z(7)), fmtLen(Math.hypot(q.x - p.x, q.y - p.y), opt.unit), 9, ang, `fill="${color}" font-weight="600" ${halo}`);
+    };
+    // Free-standing columns are measured off the nearest walls across and up/down; whatever is
+    // picked (a column or a drawn rectangle / circle) off all the walls around it.
+    const items = [...(room.columns || []).map(c => ({ c, on: c.id === opt.selectedOp })),
+      ...(room.shapes || []).filter(sh => sh.id === opt.selectedOp).map(c => ({ c, on: true }))];
+    for (const { c, on } of items) {
+      const box = itemBox(c);
+      if (!box) continue;
+      const all = clearances(g, box);
+      for (const d of on ? all : nearestClearances(all)) dimLine(d.from, d.to, CLEAR, on ? 0.6 : 3.2);
+    }
+    for (const d of [...(room.dims || []), ...(opt.draftDim ? [{ ...opt.draftDim, id: '__draft' }] : [])]) {
+      const p = { x: +d.x1 || 0, y: +d.y1 || 0 }, q = { x: +d.x2 || 0, y: +d.y2 || 0 }, on = d.id === opt.selectedOp;
+      dimLine(p, q, on || d.id === '__draft' ? ACC : DIMLINE, on ? 0.4 : 2.6, d.id === '__draft' ? ' ' + dash(4, 3) : '');
+      if (!opt.export && d.id !== '__draft') out.push(line(X(p), X(q), `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(16))}" data-dim="${d.id}" style="cursor:pointer"`));
+    }
 
     // Door / window tags in a small box just inside the wall
     for (const { p, tag, sel: on } of tagSpots) {

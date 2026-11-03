@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.22';
+const APP_VERSION = '1.0.23';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -27,7 +27,7 @@ let photos = new Map();   // photo id → record for P
 let view = { name: 'home' };
 let selectedWall = null;
 let selectedOp = null;    // door/window/column/shape picked in the plan, highlighted in the form
-let planTool = null;      // 'edit' | 'wall' | 'light' | 'glass' | 'column' | 'line' | 'rect' | 'circle' while working on the plan
+let planTool = null;      // 'edit' | 'wall' | 'light' | 'glass' | 'column' | 'dim' | 'line' | 'rect' | 'circle' while working on the plan
 let preview = {};         // { draft, draftWall, snapAt } shown while a plan drag is under way
 let snapOn = true;
 try { snapOn = localStorage.getItem('plan-snap') !== '0'; } catch { /* storage unavailable */ }
@@ -486,6 +486,8 @@ function handlesFor(room) {
     else if (sh.type === 'circle') out.push({ x: (+sh.x || 0) + (+sh.d || 0) / 2, y: +sh.y || 0, id: 'circle-r', for: sh.id });
     else out.push({ ...a, id: 'line-1', for: sh.id }, { ...b, id: 'line-2', for: sh.id });
   }
+  const dm = room.dims?.find(x => x.id === selectedOp);
+  if (dm) return [{ x: +dm.x1, y: +dm.y1, id: 'dim-1', for: dm.id }, { x: +dm.x2, y: +dm.y2, id: 'dim-2', for: dm.id }];
   const g = geometry(room);
   // A picked door / window / opening: its two ends, to make it wider or narrower.
   for (const s of g.segs) {
@@ -516,6 +518,8 @@ function pickedItem(room) {
   if (sh) return { kind: 'shape', sh, name: shapeName(sh) };
   const fc = room.columns?.find(x => x.id === selectedOp);
   if (fc) return { kind: 'fcol', c: fc, name: 'Column' };
+  const dm = room.dims?.find(x => x.id === selectedOp);
+  if (dm) return { kind: 'dim', d: dm, name: `Dimension ${fmtLen(Math.hypot(dm.x2 - dm.x1, dm.y2 - dm.y1), P.unit)} ${unitLabel()}` };
   const i = planTool ? room.walls.findIndex(x => x.id === selectedWall) : -1;
   if (i >= 0) return { kind: 'wall', w: room.walls[i], name: room.walls[i].gap ? `Gap (wall ${i + 1})` : `Wall ${i + 1}` };
   return null;
@@ -541,7 +545,7 @@ function pickQuick(room) {
 }
 
 const KIND_BUTTONS = { '': '🧱 Masonry', light: '▯ Light', glass: '🪟 Glass' };
-const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', light: '▯ Light wall', glass: '🪟 Glass wall', column: '▪ Column', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
+const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', light: '▯ Light wall', glass: '🪟 Glass wall', column: '▪ Column', dim: '↔ Dimension', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
 
 function drawBar() {
   const room = curRoom(), quick = room ? pickQuick(room) : '';
@@ -556,7 +560,8 @@ function drawBar() {
       wall: 'Tap or drag to where the wall ends; it continues from the last wall · finish at corner A to close the room',
       light: 'Like 🧱 Wall, but the new wall is a light wall (drywall) · switch any wall later: tap it in ✋ Move / resize',
       glass: 'Like 🧱 Wall, but the new wall is glass · switch any wall later: tap it in ✋ Move / resize',
-      column: 'Tap where a free-standing column goes · drag it, or type its size, afterwards',
+      column: 'Tap where a free-standing column goes · drag it, or type its size, afterwards · it shows how far it stands off the walls',
+      dim: 'Drag from one point to another for a dimension · it snaps to corners, walls, columns and items · tap one in ✋ to move its ends or delete it',
     }[planTool] || 'Drag on the plan to draw'}</small>`;
 }
 
@@ -873,6 +878,8 @@ $app.addEventListener('click', async e => {
       document.getElementById('op-' + selectedOp)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
+    const dm = e.target.closest('[data-dim]');
+    if (dm && (!planTool || planTool === 'edit')) { selectedOp = dm.dataset.dim; await rerender(); return; }
     const fc = e.target.closest('[data-fcol]');
     if (fc && (!planTool || planTool === 'edit')) {
       selectedOp = fc.dataset.fcol;
@@ -955,6 +962,7 @@ $app.addEventListener('click', async e => {
         resolveRefs(it.w);
       } else if (it.kind === 'col') it.w.columns = it.w.columns.filter(x => x !== it.c);
       else if (it.kind === 'fcol') room.columns = room.columns.filter(x => x !== it.c);
+      else if (it.kind === 'dim') room.dims = room.dims.filter(x => x !== it.d);
       else room.shapes = room.shapes.filter(x => x !== it.sh);
       selectedOp = null;
       save();
@@ -989,6 +997,7 @@ $app.addEventListener('click', async e => {
       }
       for (const sh of copy.shapes || []) sh.id = fresh(sh.id);
       for (const c of copy.columns || []) c.id = fresh(c.id);
+      for (const d of copy.dims || []) d.id = fresh(d.id);
       P.rooms.splice(P.rooms.indexOf(room) + 1, 0, copy);
       save();
       location.hash = `#/p/${P.id}/r/${copy.id}`;

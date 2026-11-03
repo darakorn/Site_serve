@@ -7,7 +7,7 @@
 // footprints fill the gap. Walls and columns carry the ceiling height as entity thickness, so
 // AutoCAD shows them in 3D straight away. Door and window symbols sit on their own -Symbol layers.
 
-import { geometry, openingShapes, openingTags, chainBreaks, columnShape, freeColumnShape, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
+import { geometry, openingShapes, openingTags, chainBreaks, columnShape, freeColumnShape, itemBox, clearances, nearestClearances, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
 
 const LAYERS = [
   ['Wall', 7], ['Partition', 8], ['Glass', 4], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
@@ -170,11 +170,27 @@ function drawRoom(w, room, ox, oy, unit, tDef) {
     }
   }
 
+  // A dimension between two plan points: line, slanted ticks, length above.
+  const dim = (p, q) => {
+    const a = P(p), b = P(q), len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1) return;
+    const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len }, n = { x: -u.y, y: u.x };
+    const tk = { x: (u.x + n.x) * Math.SQRT1_2, y: (u.y + n.y) * Math.SQRT1_2 };
+    w.line('Dim', a, b);
+    for (const c of [a, b]) w.line('Dim', add(c, tk, -TICK / 2), add(c, tk, TICK / 2));
+    const ang = readable(deg(u)), up = ang === deg(u) ? 1 : -1;
+    w.text('Dim', add({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, n, up * TXT), TXT, fmtLen(len / 10, unit), ang);
+  };
+
+  // Free-standing columns, each measured off the nearest walls across and up/down.
   for (const c of room.columns || []) {
     const sh = freeColumnShape(c);
     if (sh?.round) w.circle('Column', P(sh.round.c), sh.round.r * 10, height);
     else if (sh) w.poly('Column', sh.corners.map(P), height);
+    const box = itemBox(c);
+    if (box) for (const d of nearestClearances(clearances(geo, box))) dim(d.from, d.to);
   }
+  for (const d of room.dims || []) dim({ x: +d.x1 || 0, y: +d.y1 || 0 }, { x: +d.x2 || 0, y: +d.y2 || 0 });
 
   // Shapes drawn into the plan (counters, built-ins…)
   for (const sh of room.shapes || []) {
