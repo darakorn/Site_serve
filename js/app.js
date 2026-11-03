@@ -4,9 +4,10 @@ import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
+import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.18';
+const APP_VERSION = '1.0.19';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -175,7 +176,7 @@ function photoStrip(roomId, wallId) {
   const attrs = `data-photo-room="${roomId}" data-photo-wall="${wallId || ''}"`;
   return `<div class="photos">
     ${roomPhotos(roomId, wallId).map(p => `<button class="thumb" data-act="open-photo" data-ph="${p.id}" aria-label="Open photo"><img data-img="${p.id}" alt=""></button>`).join('')}
-    <label class="thumb add">📷<span>Camera</span><input type="file" accept="image/*" capture="environment" ${attrs} hidden></label>
+    <label class="thumb add" data-act="camera">📷<span>Camera</span><input type="file" accept="image/*" capture="environment" ${attrs} hidden></label>
     <label class="thumb add">🖼<span>Gallery</span><input type="file" accept="image/*" multiple ${attrs} hidden></label>
   </div>`;
 }
@@ -887,6 +888,16 @@ $app.addEventListener('click', async e => {
       save();
       await rerender();
       document.getElementById('w-' + nw.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      break;
+    }
+    case 'camera': {
+      // The in-app camera when the page may use it; otherwise the label opens the phone's camera app.
+      if (!hasCamera()) break;
+      e.preventDefault();
+      const input = t.querySelector('input'), { photoRoom, photoWall } = input.dataset;
+      let blob;
+      try { blob = await takePhoto(room?.name || ''); } catch { input.click(); break; }
+      if (blob) await addPhotos([blob], photoRoom, photoWall || null, true);
       break;
     }
     case 'del-picked': {
