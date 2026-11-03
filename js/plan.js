@@ -54,17 +54,31 @@ export function openStyle(o) {
  * a: start point on the wall line, u: unit along the wall, n: unit into the room,
  * (o.swing === 'out' opens a swing door away from the room; o.hinge === 'right' mirrors a door so
  * its hinge is on the right as seen from inside the room — the wall's end corner),
- * w: opening width, t: symbol depth (wall thickness), mid: offset of the frame centre along n.
+ * w: opening width, t: symbol depth (wall thickness), mid: offset of the frame centre along n,
+ * fw: width of a door's frame jambs.
  * Returns [{ line: [p, q], dash }, { arc: { c, from, to }, dash }].
  */
-export function openingShapes(o, a, u, n, w, t, mid = 0) {
+export function openingShapes(o, a, u, n, w, t, mid = 0, fw = 0) {
   const st = openStyle(o);
   if (!st) return [];
-  const { style, leaves: L } = st, lw = w / L;
+  const { style, leaves: L } = st;
   const flip = o.type === 'door' && o.hinge === 'right';
-  const P = (along, across = 0) => add(add(a, u, flip ? w - along : along), n, across);
   const out = [];
   const ln = (p, q, dash = false) => out.push({ line: [p, q], dash });
+  // A door's frame: a jamb fw wide through the wall thickness at each side; the leaves hang
+  // between them.
+  const jamb = o.type === 'door' ? Math.min(Math.max(0, fw), w / 4) : 0;
+  if (jamb) {
+    const R = (along, across) => add(add(a, u, along), n, across);
+    for (const x of [0, w - jamb]) {
+      const c = [R(x, mid - t / 2), R(x + jamb, mid - t / 2), R(x + jamb, mid + t / 2), R(x, mid + t / 2)];
+      c.forEach((p, i) => ln(p, c[(i + 1) % 4]));
+    }
+    a = add(a, u, jamb);
+    w -= 2 * jamb;
+  }
+  const lw = w / L;
+  const P = (along, across = 0) => add(add(a, u, flip ? w - along : along), n, across);
   // Leaves hinge on the outer jambs, meeting in the middle.
   const hinges = () => Array.from({ length: L }, (_, i) => {
     const left = L === 1 || i < L / 2;
@@ -168,7 +182,12 @@ export function segPoint(sg, x) {
   if (!arc) return { p: add(sg.p0, sg.u, x), t: sg.u, n: sg.inward };
   const X = x - sg.len / 2, root = Math.sqrt(Math.max(0, arc.r * arc.r - X * X));
   const y = arc.sign * (root - (arc.r - Math.abs(arc.h)));
-  const slope = root ? (-arc.sign * X) / root : 0;
+  // At the ends of a half circle the arc runs straight out from (or back into) the chord.
+  if (!root) {
+    const t = add({ x: 0, y: 0 }, arc.out, X < 0 ? arc.sign : -arc.sign);
+    return { p: add(add(sg.p0, sg.u, x), arc.out, y), t, n: sg.inwardOf(t) };
+  }
+  const slope = (-arc.sign * X) / root;
   const tv = add(sg.u, arc.out, slope), k = Math.hypot(tv.x, tv.y);
   const t = { x: tv.x / k, y: tv.y / k };
   return { p: add(add(sg.p0, sg.u, x), arc.out, y), t, n: sg.inwardOf(t) };
@@ -236,19 +255,51 @@ export function geometry(room) {
   return { pts, segs, end, gap, wallLen: perimeter - gaps - glass, glassLen: glass, closed: gap < 1 && (segs.length >= 3 || (segs.length === 2 && segs.every(sg => sg.arc))), area, perimeter, cw, extent };
 }
 
-// Unbroken stretches of solid wall between gaps and glass walls. A closed room with no gap is one loop.
-export function wallRuns(g) {
-  const segs = g.segs, n = segs.length, first = segs.findIndex(sg => sg.gap || sg.glass);
-  if (first < 0) return n ? [{ segs, loop: g.closed }] : [];
-  // In a closed room a run may wrap past the last wall to the first, so start after a gap.
-  const order = g.closed ? [...segs.slice(first + 1), ...segs.slice(0, first + 1)] : segs;
-  const runs = [];
-  let cur = [];
-  for (const sg of order) {
-    if (sg.gap || sg.glass) { if (cur.length) runs.push({ segs: cur, loop: false }); cur = []; } else cur.push(sg);
-  }
-  if (cur.length) runs.push({ segs: cur, loop: false });
-  return runs;
+export const WALL_KINDS = { '': 'Masonry (solid)', light: 'Light wall (no hatch)', glass: 'Glass wall' };
+export const WALL_T = 10; // cm, when neither the wall nor the project gives a thickness
+export const DOOR_FRAME = 5; // cm, width of a door frame jamb
+
+// A wall's thickness in cm: its own, else the project's default.
+export const wallT = (sg, def) => (+sg.wall.thickness > 0 ? +sg.wall.thickness : +def > 0 ? +def : WALL_T);
+
+// Outside face at one end of a wall: where its outer face meets the outer face of the wall next
+// to it (a mitre, also between walls of different thickness), or straight out from the end when
+// there is none, it's a gap, or the two run on in line. Plan cm; walls run outward from the
+// measured inside face. tOf(sg) gives each wall's thickness.
+export function outerCorner(g, sg, end, tOf) {
+  const k = g.segs.indexOf(sg), n = g.segs.length;
+  let other = end === 'start' ? (k > 0 ? g.segs[k - 1] : g.closed ? g.segs[n - 1] : null)
+    : (k < n - 1 ? g.segs[k + 1] : g.closed ? g.segs[0] : null);
+  if (!other || other === sg || other.gap || !other.len) other = null;
+  const here = segPoint(sg, end === 'start' ? 0 : sg.len), t2 = tOf(sg);
+  const flat = add(here.p, here.n, -t2);
+  if (!other) return flat;
+  const there = segPoint(other, end === 'start' ? other.len : 0), t1 = tOf(other);
+  const q = crossing(flat, here.t, add(there.p, there.n, -t1), there.t);
+  // Parallel, or so sharp a corner that the mitre would shoot off: square it off instead.
+  return q && Math.hypot(q.x - flat.x, q.y - flat.y) <= 4 * Math.max(t1, t2) ? q : flat;
+}
+
+// A wall's two faces as point lists (plan cm), inside face first; a curved wall is sampled along
+// its arc. The outer face's ends are the mitred corners.
+export function wallOutline(g, sg, tOf) {
+  const t = tOf(sg), steps = sg.arc ? 32 : 1;
+  // Even steps round the arc, not along the chord: near the ends of a deep arc chord steps get
+  // long and the curve turns into a point.
+  const half = sg.arc ? Math.asin(Math.min(1, sg.len / (2 * sg.arc.r))) : 0;
+  const xAt = i => (sg.arc ? sg.len / 2 + sg.arc.r * Math.sin(-half + (2 * half * i) / steps) : (sg.len * i) / steps);
+  const at = Array.from({ length: steps + 1 }, (_, i) => segPoint(sg, clamp(xAt(i), 0, sg.len)));
+  const inner = at.map(q => q.p), outer = at.map(q => add(q.p, q.n, -t));
+  outer[0] = outerCorner(g, sg, 'start', tOf);
+  outer[steps] = outerCorner(g, sg, 'end', tOf);
+  return { inner, outer };
+}
+
+function crossing(p, u, q, v) {
+  const c = u.x * v.y - u.y * v.x;
+  if (Math.abs(c) < 1e-6) return null;
+  const k = ((q.x - p.x) * v.y - (q.y - p.y) * v.x) / c;
+  return add(p, u, k);
 }
 
 // SVG path through the room's corners, with arcs for curved walls. X maps plan → SVG.
@@ -327,20 +378,35 @@ export function renderPlan(room, opt = {}) {
 
   const corners = g.closed ? g.pts.slice(0, -1) : g.pts;
   out.push(`<path d="${wallPath(g, X, g.segs, true)}" fill="#f3efe6"/>`);
-  // Walls in runs between gaps; a gap (a deleted wall) is a dashed line waiting to be filled in.
-  for (const run of wallRuns(g)) out.push(`<path d="${wallPath(g, X, run.segs, run.loop)}" fill="none" stroke="${INK}" stroke-width="${f(T)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
-  for (const sg of g.segs.filter(x => x.gap)) out.push(line(X(sg.p0), X(sg.p1), `stroke="${DIM}" stroke-width="${f(Z(mini ? 1 : 1.6))}" ${dash(7, 5)}`));
-  // Glass walls: a pale blue band through the wall thickness, outlined, with the glass line along
-  // the middle. They reach into the corners like the solid walls do.
-  for (const sg of g.segs.filter(x => x.glass)) {
-    const d = wallPath(g, X, [sg], false), edge = Z(mini ? 0.8 : 1.2);
-    out.push(`<path d="${d}" fill="none" stroke="${GLASS_LINE}" stroke-width="${f(T + edge)}" stroke-linecap="square"/>`);
-    out.push(`<path d="${d}" fill="none" stroke="${GLASS}" stroke-width="${f(T - edge)}" stroke-linecap="square"/>`);
-    out.push(`<path d="${d}" fill="none" stroke="${GLASS_LINE}" stroke-width="${f(Z(mini ? 0.8 : 1.2))}"/>`);
+
+  // Walls to scale, from the measured inside face outward by their thickness, by kind:
+  // masonry solid black, a light wall just its outline, glass a pale blue band with the glass
+  // line down the middle. A gap (a deleted wall) is a dashed line waiting to be filled in.
+  const tOf = sg => wallT(sg, opt.wallT), tPx = sg => tOf(sg) * s;
+  const pts = list => list.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ');
+  const kindOf = sg => (sg.gap ? 'gap' : sg.glass ? 'glass' : sg.wall.kind === 'light' ? 'light' : 'solid');
+  const outlines = new Map(g.segs.filter(sg => !sg.gap && sg.len).map(sg => [sg, wallOutline(g, sg, tOf)]));
+  const edge = Z(mini ? 0.8 : 1.2);
+  for (const [sg, { inner, outer }] of outlines) {
+    const kind = kindOf(sg), ring = pts([...inner, ...[...outer].reverse()]);
+    if (kind === 'solid') { out.push(`<polygon points="${ring}" fill="${INK}" stroke="${INK}" stroke-width="${f(Z(0.6))}" stroke-linejoin="round"/>`); continue; }
+    const ink = kind === 'glass' ? GLASS_LINE : INK;
+    out.push(`<polygon points="${ring}" fill="${kind === 'glass' ? GLASS : '#fff'}"/>`);
+    out.push(`<polyline points="${pts(inner)}" fill="none" stroke="${ink}" stroke-width="${f(edge)}"/>`, `<polyline points="${pts(outer)}" fill="none" stroke="${ink}" stroke-width="${f(edge)}"/>`);
+    // Close off an end unless it runs on into a wall of the same kind.
+    const k = g.segs.indexOf(sg), n = g.segs.length;
+    const prev = k > 0 ? g.segs[k - 1] : g.closed ? g.segs[n - 1] : null, next = k < n - 1 ? g.segs[k + 1] : g.closed ? g.segs[0] : null;
+    if (!prev || kindOf(prev) !== kind) out.push(line(X(inner[0]), X(outer[0]), `stroke="${ink}" stroke-width="${f(edge)}"`));
+    if (!next || kindOf(next) !== kind) out.push(line(X(inner.at(-1)), X(outer.at(-1)), `stroke="${ink}" stroke-width="${f(edge)}"`));
+    if (kind === 'glass') out.push(`<polyline points="${pts(inner.map((p, i) => mid(p, outer[i])))}" fill="none" stroke="${GLASS_LINE}" stroke-width="${f(edge)}"/>`);
   }
+  for (const sg of g.segs.filter(x => x.gap)) out.push(line(X(sg.p0), X(sg.p1), `stroke="${DIM}" stroke-width="${f(Z(mini ? 1 : 1.6))}" ${dash(7, 5)}`));
 
   const sel = g.segs.find(sg => sg.wall.id === opt.selected);
-  if (sel && !mini) out.push(`<path d="${wallPath(g, X, [sel], false)}" fill="none" stroke="${ACC}" stroke-width="${f(sel.gap ? Z(2.5) : T)}" stroke-linecap="square"${sel.gap ? ' ' + dash(7, 5) : ''}/>`);
+  if (sel && !mini) {
+    if (outlines.has(sel)) { const o = outlines.get(sel); out.push(`<polygon points="${pts([...o.inner, ...[...o.outer].reverse()])}" fill="${ACC}" fill-opacity="0.55" stroke="${ACC}" stroke-width="${f(Z(1.5))}"/>`); }
+    else out.push(line(X(sel.p0), X(sel.p1), `stroke="${ACC}" stroke-width="${f(Z(2.5))}" ${dash(7, 5)}`));
+  }
 
   // Doors, windows and other openings
   // On a curved wall each opening is drawn straight between its two ends on the arc.
@@ -351,15 +417,18 @@ export function renderPlan(room, opt = {}) {
       const w = clamp(+o.width || 0, 0, sg.len - off);
       if (!w) continue;
       const a = X(segPoint(sg, off).p), b = X(segPoint(sg, off + w).p), r = Math.hypot(b.x - a.x, b.y - a.y);
-      const u = { x: (b.x - a.x) / r, y: (b.y - a.y) / r }, n = inward(u);
-      out.push(line(a, b, `stroke="#fff" stroke-width="${f(T + Z(2))}"`));
+      const u = { x: (b.x - a.x) / r, y: (b.y - a.y) / r }, n = inward(u), o2 = { x: -n.x, y: -n.y };
+      const tw = sg.gap ? T : tPx(sg), jamb = `stroke="${sg.glass ? GLASS_LINE : INK}" stroke-width="${f(Z(1))}"`;
+      // Cut the wall away through its thickness, then close the cut with a jamb line each side.
+      out.push(`<polygon points="${[add(a, n, Z(1)), add(b, n, Z(1)), add(b, o2, tw + Z(1)), add(a, o2, tw + Z(1))].map(p => `${f(p.x)},${f(p.y)}`).join(' ')}" fill="#fff"/>`);
+      out.push(line(a, add(a, o2, tw), jamb), line(b, add(b, o2, tw), jamb));
       // The picked one is marked along its span: a plain opening has no tag to light up.
       if (!mini && o.id === opt.selectedOp) out.push(line(a, b, `stroke="${ACC}" stroke-width="${f(Z(4))}" stroke-opacity="0.6"`));
       if (tags.has(o.id)) tagSpots.push({ p: add(mid(a, b), n, Z(o.type === 'door' ? 12 : 10)), tag: tags.get(o.id), sel: o.id === opt.selectedOp });
       if (!mini && !opt.export) hits.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(22))}" data-wall="${sg.wall.id}" data-op="${o.id}" style="cursor:pointer"`));
       if (o.type === 'door' || o.type === 'window') {
         const solid = Z(o.type === 'door' ? (mini ? 1 : 1.6) : 1);
-        for (const sh of openingShapes(o, a, u, n, r, T)) {
+        for (const sh of openingShapes(o, a, u, n, r, tw, -tw / 2, Math.max(DOOR_FRAME * s, Z(2)))) {
           if (sh.line) {
             out.push(line(sh.line[0], sh.line[1], `stroke="${INK}" stroke-width="${f(sh.dash ? Z(0.8) : solid)}"${sh.dash ? ' ' + dash(3, 2) : ''}`));
           } else {
@@ -369,7 +438,7 @@ export function renderPlan(room, opt = {}) {
           }
         }
       } else {
-        out.push(line(a, b, `stroke="${INK}" stroke-width="${f(Z(1.2))}" ${dash(4, 3)}`));
+        out.push(line(a, b, `stroke="${INK}" stroke-width="${f(Z(1.2))}" ${dash(4, 3)}`), line(add(a, o2, tw), add(b, o2, tw), `stroke="${INK}" stroke-width="${f(Z(1.2))}" ${dash(4, 3)}`));
       }
     }
   }
@@ -443,13 +512,13 @@ export function renderPlan(room, opt = {}) {
       // Chain dimension: corner, each door/window edge, corner. The overall length moves out a row.
       // Dimensions run along the chord; a wall bowing outward pushes them past its arc.
       const push = sg.arc?.sign > 0 ? Math.abs(sg.arc.h) * s : 0;
-      const breaks = chainBreaks(sg), dc = Z(22) + push, d = Z(breaks ? 40 : 24) + push;
+      const tp = sg.gap ? 0 : tPx(sg), breaks = chainBreaks(sg), dc = Z(22) + push + tp, d = Z(breaks ? 40 : 24) + push + tp;
       if (breaks) {
         const at = v => add(a, sg.u, v * s);
         out.push(line(add(at(0), o, dc), add(at(sg.len), o, dc), thin));
         breaks.forEach((v, k) => {
           const p = add(at(v), o, dc);
-          if (k && k < breaks.length - 1) out.push(line(add(at(v), o, Z(6)), add(p, o, Z(3)), thin));
+          if (k && k < breaks.length - 1) out.push(line(add(at(v), o, Z(6) + tp), add(p, o, Z(3)), thin));
           tick(p);
           const nx = breaks[k + 1];
           if (nx == null) return;
@@ -459,7 +528,7 @@ export function renderPlan(room, opt = {}) {
         });
       }
       const da = add(a, o, d), db = add(b, o, d);
-      out.push(line(add(a, o, Z(6)), add(a, o, d + Z(4)), thin), line(add(b, o, Z(6)), add(b, o, d + Z(4)), thin), line(da, db, thin));
+      out.push(line(add(a, o, Z(6) + tp), add(a, o, d + Z(4)), thin), line(add(b, o, Z(6) + tp), add(b, o, d + Z(4)), thin), line(da, db, thin));
       tick(da); tick(db);
       // Longer walls win a tie for space.
       text(1 + 1 / (1 + sg.len), add(mid(da, db), o, Z(8)), lenStr, 12, ang, `font-weight="600" fill="${INK}" ${halo}`);
@@ -479,10 +548,10 @@ export function renderPlan(room, opt = {}) {
     corners.forEach((p, i) => {
       const prev = g.segs[i - 1] ?? (g.closed ? g.segs[g.segs.length - 1] : null);
       const next = g.segs[i];
-      let v = { x: 0, y: 0 };
-      for (const sg of [prev, next]) if (sg) { const n = inward(sg.u); v.x -= n.x; v.y -= n.y; }
+      let v = { x: 0, y: 0 }, tp = 0;
+      for (const sg of [prev, next]) if (sg) { const n = inward(sg.u); v.x -= n.x; v.y -= n.y; if (!sg.gap) tp = Math.max(tp, tPx(sg)); }
       const k = Math.hypot(v.x, v.y) || 1;
-      text(i ? 2 : 0.5, add(X(p), { x: v.x / k, y: v.y / k }, Z(13)), cornerName(i), 11, 0, `font-weight="700" fill="${ACC}" ${halo}`);
+      text(i ? 2 : 0.5, add(X(p), { x: v.x / k, y: v.y / k }, Z(13) + tp * 1.4), cornerName(i), 11, 0, `font-weight="700" fill="${ACC}" ${halo}`);
     });
 
     if (g.segs.length >= 2 && g.gap >= 1) {

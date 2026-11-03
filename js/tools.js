@@ -2,7 +2,8 @@
 //   edit  — drag doors, windows, columns and drawn shapes; drag handles to resize a shape, or on
 //           the selected wall: either end to stretch / swing it, the middle to move it sideways.
 //           The walls next to it keep their direction and follow, so a closed room stays closed.
-//   wall  — tap or drag to add a wall from where the last one ends (glass: the same, as a glass wall).
+//   wall  — tap or drag to add a wall from where the last one ends (light / glass: the same, as
+//           a light wall or a glass wall).
 //   line / rect / circle — drag out a shape.
 // With snap on, points stick to room corners, shape points and walls nearby, angles to 45° steps
 // and everything else to a 5 cm grid. Two fingers still pinch-zoom (zoom.js); a second finger
@@ -117,7 +118,7 @@ export function attachPlanTools(box, ctx) {
   // ---------- starting a drag ----------
   function begin(e) {
     const tool = ctx.tool(), { p, ppcm } = frame(e), el = e.target;
-    if (tool === 'wall' || tool === 'glass') return { kind: 'wall', glass: tool === 'glass' };
+    if (tool === 'wall' || tool === 'light' || tool === 'glass') return { kind: 'wall', wallKind: tool === 'wall' ? null : tool };
     if (tool === 'line' || tool === 'rect' || tool === 'circle') return { kind: 'shape-new', a: snapPoint(p, ppcm).p };
     if (tool !== 'edit') return null;
 
@@ -344,7 +345,7 @@ export function attachPlanTools(box, ctx) {
         const g = geometry(room);
         setTurn(last, heading - g.segs.at(-1).heading);
       }
-      const nw = ctx.newWall({ length: len, turn: 90, ...(d.glass ? { kind: 'glass' } : {}) });
+      const nw = ctx.newWall({ length: len, turn: 90, ...(d.wallKind ? { kind: d.wallKind } : {}) });
       room.walls.push(nw);
       return ctx.done(nw.id, 'wall');
     }

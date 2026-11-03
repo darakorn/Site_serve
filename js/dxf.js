@@ -2,15 +2,15 @@
 // With a ceiling height set, the walls are complete in 3D: full height between openings, plus the
 // part under each window and over each door / window / opening.
 // Drawing units are millimetres; the plan's y-down centimetres are flipped to CAD's y-up.
-// Wall, Door, Window, Opening and Column hold closed outlines ready to extrude into 3D: walls run
+// Wall (masonry), Partition (light walls), Glass, Door, Window, Opening and Column hold closed outlines ready to extrude into 3D: walls run
 // from the measured inside face out by the wall thickness and break at doors and windows, whose
 // footprints fill the gap. Walls and columns carry the ceiling height as entity thickness, so
 // AutoCAD shows them in 3D straight away. Door and window symbols sit on their own -Symbol layers.
 
-import { geometry, openingShapes, openingTags, chainBreaks, columnShape, segPoint, shapePoints, fmtLen, fmtArea } from './plan.js';
+import { geometry, openingShapes, openingTags, chainBreaks, columnShape, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
 
 const LAYERS = [
-  ['Wall', 7], ['Glass', 4], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
+  ['Wall', 7], ['Partition', 8], ['Glass', 4], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
   ['Opening', 8], ['Column', 6], ['Furniture', 4], ['Dim', 1], ['Text', 2],
 ];
 const DIM_OFF = 300, DIM_ROW = 300, TICK = 60, TXT = 120, NAME_TXT = 250, ROOM_GAP = 1500;
@@ -67,8 +67,9 @@ function writer() {
   };
 }
 
-// Draws one room with its corner A at (ox, oy) in CAD space. t: wall thickness in mm.
-function drawRoom(w, room, ox, oy, unit, t) {
+// Draws one room with its corner A at (ox, oy) in CAD space. tDef: default wall thickness in cm;
+// each wall may have its own.
+function drawRoom(w, room, ox, oy, unit, tDef) {
   const geo = geometry(room);
   const P = p => ({ x: ox + p.x * 10, y: oy - p.y * 10 });
   const V = v => ({ x: v.x, y: -v.y }); // plan direction ↔ CAD direction (its own inverse)
@@ -84,23 +85,11 @@ function drawRoom(w, room, ox, oy, unit, t) {
     return Math.atan2(ax * by - ay * bx, ax * bx + ay * by);
   };
 
-  // Outside face at a corner: where the outer faces of the walls either side meet (mitre).
-  const outerCorner = (end, sg) => {
-    const k = segs.indexOf(sg);
-    let other = end === 'start'
-      ? (k > 0 ? segs[k - 1] : geo.closed ? segs[segs.length - 1] : null)
-      : (k < segs.length - 1 ? segs[k + 1] : geo.closed ? segs[0] : null);
-    if (other?.gap) other = null;
-    const here = at(sg, end === 'start' ? 0 : sg.len * 10), o2 = here.o;
-    if (!other) return add(here.p, o2, t);
-    const o1 = at(other, end === 'start' ? other.len * 10 : 0).o, dot = o1.x * o2.x + o1.y * o2.y;
-    if (dot < -0.99) return add(here.p, o2, t);
-    return add(here.p, { x: o1.x + o2.x, y: o1.y + o2.y }, t / (1 + dot));
-  };
+  const tOf = sg => wallT(sg, tDef);
 
   for (const sg of segs) {
     if (sg.gap) continue; // a deleted wall: nothing to build
-    const A = P(sg.p0), B = P(sg.p1);
+    const A = P(sg.p0), B = P(sg.p1), t = tOf(sg) * 10;
     const len = sg.len * 10;
     const u = { x: (B.x - A.x) / len, y: (B.y - A.y) / len };
     const o = V(neg(sg.inward));
@@ -116,7 +105,8 @@ function drawRoom(w, room, ox, oy, unit, t) {
 
     // Wall pieces between openings, each a closed outline through the wall thickness.
     // Curved walls follow their arc on both faces.
-    const qa = outerCorner('start', sg), qb = outerCorner('end', sg), layer = sg.glass ? 'Glass' : 'Wall';
+    const qa = P(outerCorner(geo, sg, 'start', tOf)), qb = P(outerCorner(geo, sg, 'end', tOf));
+    const layer = sg.glass ? 'Glass' : sg.wall.kind === 'light' ? 'Partition' : 'Wall';
     const piece = (s0, s1, z = 0, h = height) => {
       if (s1 - s0 < 0.5) return;
       const e0 = at(sg, s0), e1 = at(sg, s1);
@@ -144,7 +134,7 @@ function drawRoom(w, room, ox, oy, unit, t) {
       if (layer === 'Opening') continue;
       w.text('Text', add(add(a, ul, span / 2), nl, TXT * 2.5), TXT * 1.2, tags.get(op.id));
       // Frames and sliding panels sit inside the wall thickness; swings open from the inside face.
-      for (const sh of openingShapes(op, a, ul, nl, span, t, -t / 2)) {
+      for (const sh of openingShapes(op, a, ul, nl, span, t, -t / 2, DOOR_FRAME * 10)) {
         if (sh.line) { w.line(`${layer}-Symbol`, sh.line[0], sh.line[1], sh.dash); continue; }
         const { c, from, to } = sh.arc;
         const t0 = deg({ x: from.x - c.x, y: from.y - c.y }), t1 = deg({ x: to.x - c.x, y: to.y - c.y });
@@ -200,7 +190,7 @@ function drawRoom(w, room, ox, oy, unit, t) {
 // Rooms are laid out left to right so a whole project lands in one file.
 // opt: { unit (label unit), wallThickness (cm, default 10) }
 export function plansToDxf(rooms, { unit, wallThickness } = {}) {
-  const t = (+wallThickness > 0 ? +wallThickness : 10) * 10;
+  const tDef = +wallThickness > 0 ? +wallThickness : 10, t = tDef * 10; // room spacing allows for it
   const w = writer();
   let x = 0;
   for (const room of rooms) {
@@ -209,7 +199,7 @@ export function plansToDxf(rooms, { unit, wallThickness } = {}) {
     const fit = [...geo.extent, ...(room.shapes || []).flatMap(shapePoints)];
     const xs = fit.map(p => p.x * 10), ys = fit.map(p => p.y * 10);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys);
-    drawRoom(w, room, x - minX + t, minY, unit, t);
+    drawRoom(w, room, x - minX + t, minY, unit, tDef);
     x += maxX - minX + ROOM_GAP + 2 * t;
   }
 
