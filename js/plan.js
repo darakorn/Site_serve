@@ -339,6 +339,8 @@ export function renderPlan(room, opt = {}) {
       const a = X(segPoint(sg, off).p), b = X(segPoint(sg, off + w).p), r = Math.hypot(b.x - a.x, b.y - a.y);
       const u = { x: (b.x - a.x) / r, y: (b.y - a.y) / r }, n = inward(u);
       out.push(line(a, b, `stroke="#fff" stroke-width="${f(T + Z(2))}"`));
+      // The picked one is marked along its span: a plain opening has no tag to light up.
+      if (!mini && o.id === opt.selectedOp) out.push(line(a, b, `stroke="${ACC}" stroke-width="${f(Z(4))}" stroke-opacity="0.6"`));
       if (tags.has(o.id)) tagSpots.push({ p: add(mid(a, b), n, Z(o.type === 'door' ? 12 : 10)), tag: tags.get(o.id), sel: o.id === opt.selectedOp });
       if (!mini && !opt.export) hits.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(22))}" data-wall="${sg.wall.id}" data-op="${o.id}" style="cursor:pointer"`));
       if (o.type === 'door' || o.type === 'window') {

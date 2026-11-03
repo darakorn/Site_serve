@@ -1,12 +1,12 @@
 import { db } from './db.js';
-import { geometry, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, shapePoints } from './plan.js';
+import { geometry, segPoint, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, shapePoints } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.17';
+const APP_VERSION = '1.0.18';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -451,7 +451,8 @@ function shapesCard(room) {
 
 const snap = v => Math.round(v / 5) * 5; // drawn shapes snap to 5 cm
 
-// Handles shown in edit mode: both ends and the middle of the selected wall, and the selected shape's grips.
+// Handles shown in edit mode: the picked shape's grips, or the ends of the picked door / window /
+// opening, or else both ends and the middle of the selected wall.
 function handlesFor(room) {
   const out = [];
   const sh = room.shapes?.find(x => x.id === selectedOp);
@@ -461,8 +462,17 @@ function handlesFor(room) {
     else if (sh.type === 'circle') out.push({ x: (+sh.x || 0) + (+sh.d || 0) / 2, y: +sh.y || 0, id: 'circle-r', for: sh.id });
     else out.push({ ...a, id: 'line-1', for: sh.id }, { ...b, id: 'line-2', for: sh.id });
   }
-  const sg = geometry(room).segs.find(x => x.wall.id === selectedWall);
-  if (sg && !sh) {
+  const g = geometry(room);
+  // A picked door / window / opening: its two ends, to make it wider or narrower.
+  for (const s of g.segs) {
+    const o = s.wall.openings.find(x => x.id === selectedOp);
+    if (!o) continue;
+    const off = Math.min(Math.max(+o.offset || 0, 0), s.len), end = Math.min(off + (+o.width || 0), s.len);
+    out.push({ ...segPoint(s, off).p, id: 'op-start', for: o.id }, { ...segPoint(s, end).p, id: 'op-end', for: o.id });
+    return out;
+  }
+  const sg = g.segs.find(x => x.wall.id === selectedWall);
+  if (sg && !sh && !(selectedOp && room.walls.some(w => (w.columns || []).some(c => c.id === selectedOp)))) {
     const m = sg.arc ? sg.arc.apex : { x: (sg.p0.x + sg.p1.x) / 2, y: (sg.p0.y + sg.p1.y) / 2 };
     out.push({ ...sg.p0, id: 'wall-start', for: sg.wall.id }, { ...sg.p1, id: 'wall-end', for: sg.wall.id }, { ...m, id: 'wall-move', for: sg.wall.id, solid: true });
   }
@@ -474,7 +484,7 @@ function handlesFor(room) {
 function pickedItem(room) {
   for (const w of room.walls) {
     const o = w.openings.find(x => x.id === selectedOp);
-    if (o) return { kind: 'op', w, o, name: openingTags(room).get(o.id) };
+    if (o) return { kind: 'op', w, o, name: openingTags(room).get(o.id) || OPEN_TYPES[o.type] };
     const c = (w.columns || []).find(x => x.id === selectedOp);
     if (c) return { kind: 'col', w, c, name: 'Column' };
   }
@@ -513,7 +523,7 @@ function drawBar() {
     <button class="btn sm${snapOn ? ' on' : ''}" data-act="snap" aria-pressed="${snapOn}">🧲 Snap</button>
     <button class="btn sm primary" data-act="tool-off">Done</button>
     <small class="tool-hint">${{
-      edit: 'Drag doors, windows, columns or items to move them · tap a wall, then drag an end to stretch / turn it or the middle to move it',
+      edit: 'Drag doors, windows, openings, columns or items to move them · tap one, then drag its ends to resize · tap a wall, then drag an end to stretch / turn it or the middle to move it',
       wall: 'Tap or drag to where the wall ends; it continues from the last wall · finish at corner A to close the room',
     }[planTool] || 'Drag on the plan to draw'}</small>`;
 }

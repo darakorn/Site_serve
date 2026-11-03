@@ -16,14 +16,25 @@ export function loadImg(blob) {
   });
 }
 
+// Phone cameras take 50–200 MP photos. Drawing one onto a canvas at full size takes several
+// hundred MB of memory and can get the page killed ("low memory"), so where the browser can,
+// it decodes the photo straight down to the size we keep. The <img> only supplies the size.
 export async function compressImage(file, max = 1600, quality = 0.85) {
   const img = await loadImg(file);
   const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
+  img.src = '';
+  let src;
+  try { src = await createImageBitmap(file, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high', imageOrientation: 'from-image' }); }
+  catch { src = await loadImg(file); }
   const c = document.createElement('canvas');
-  c.width = Math.round(img.naturalWidth * k);
-  c.height = Math.round(img.naturalHeight * k);
-  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-  return new Promise(resolve => c.toBlob(resolve, 'image/jpeg', quality));
+  c.width = w;
+  c.height = h;
+  c.getContext('2d').drawImage(src, 0, 0, w, h);
+  src.close?.();
+  const blob = await new Promise(resolve => c.toBlob(resolve, 'image/jpeg', quality));
+  c.width = c.height = 0; // hand the canvas memory back now, not at the next garbage collection
+  return blob;
 }
 
 function label(ctx, text, x, y, fs, color = RED) {

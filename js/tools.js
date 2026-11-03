@@ -292,10 +292,32 @@ export function attachPlanTools(box, ctx) {
     return snapAt;
   }
 
+  // Dragging either end of a door / window / opening along its wall; the other end stays put.
+  function resizeOpening(d, p, ppcm) {
+    const sg = geometry(room).segs.find(s => s.wall.openings.some(x => x.id === d.target));
+    if (!sg) return null;
+    const o = sg.wall.openings.find(x => x.id === d.target);
+    const a = +o.offset || 0, b = a + (+o.width || 0), MIN = GRID;
+    const marks = [0, sg.len, ...sg.wall.openings.filter(x => x !== o).flatMap(x => [+x.offset, +x.offset + +x.width])];
+    const v = snapAlong(dot(sub(p, sg.p0), sg.u), marks, ppcm);
+    if (d.handle === 'op-end') o.width = round1(clamp(v, a + MIN, sg.len) - a);
+    else {
+      // One measured on from another opening can't start before that one ends.
+      const r = o.ref && sg.wall.openings.find(x => x.id === o.ref), from = r ? (+r.offset || 0) + (+r.width || 0) : 0;
+      const na = round1(clamp(v, from, b - MIN));
+      o.width = round1(b - na);
+      if (r) o.refGap = round1(na - from);
+      else o.offset = na;
+    }
+    ctx.resolveRefs(sg.wall);
+    return null;
+  }
+
   // Handles: corners of a rectangle, the rim of a circle, the ends of a line, or on the selected
   // wall its two ends and middle. Returns the point it snapped to, if any.
   function dragHandle(d, p, ppcm) {
     if (d.handle.startsWith('wall-')) return reshapeWall(d, p, ppcm);
+    if (d.handle.startsWith('op-')) return resizeOpening(d, p, ppcm);
     const sh = room.shapes.find(x => x.id === d.target);
     if (!sh) return null;
     const s = snapPoint(p, ppcm, { skipShape: sh.id }), q = s.p;
