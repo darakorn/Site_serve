@@ -7,7 +7,7 @@
 // footprints fill the gap. Walls and columns carry the ceiling height as entity thickness, so
 // AutoCAD shows them in 3D straight away. Door and window symbols sit on their own -Symbol layers.
 
-import { geometry, openingShapes, openingTags, chainBreaks, columnShape, freeColumnShape, rectCorners, freeWallCorners, itemBox, clearances, nearestClearances, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
+import { geometry, openingShapes, openingTags, chainBreaks, columnShape, freeColumnShape, rectCorners, freeWalls, freeWallSeg, itemBox, clearances, nearestClearances, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
 
 const LAYERS = [
   ['Wall', 7], ['Partition', 8], ['Glass', 4], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
@@ -197,9 +197,45 @@ function drawRoom(w, room, ox, oy, unit, tDef) {
   for (const sh of room.shapes || []) {
     const [a, b] = shapePoints(sh).map(P);
     if (sh.type === 'wall') {
-      // A free-standing wall: a closed outline up to the ceiling, on its type's wall layer.
-      const ring = freeWallCorners(sh, tDef);
-      if (ring) w.poly(LAYER_OF[sh.kind] || 'Wall', ring.map(P), height);
+      // A free-standing wall: closed outlines up to the ceiling on its type's wall layer, broken
+      // at its doors and windows like the room's walls, its thickness centred on its line.
+      const sg = freeWallSeg(sh, tDef);
+      if (!sg) continue;
+      const layer = LAYER_OF[sh.kind] || 'Wall', half = sg.t / 2, t = sg.t * 10, n = sg.inward;
+      const at = (x, k) => P(add(add(sg.p0, sg.u, x), n, k));
+      const piece = (x0, x1, h = height, z = 0) => { if (x1 - x0 > 0.05) w.poly(layer, [at(x0, half), at(x1, half), at(x1, -half), at(x0, -half)], h, z); };
+      let pos = 0;
+      const ops = (sh.openings || []).map(op => ({ op, off: Math.min(Math.max(+op.offset || 0, 0), sg.len) }))
+        .map(x => ({ ...x, wd: Math.min(Math.max(+x.op.width || 0, 0), sg.len - x.off) })).filter(x => x.wd > 0).sort((a, b) => a.off - b.off);
+      for (const { op, off, wd } of ops) {
+        piece(pos, off);
+        pos = Math.max(pos, off + wd);
+        const opLayer = op.type === 'door' ? 'Door' : op.type === 'window' ? 'Window' : 'Opening';
+        const sill = op.type === 'window' ? Math.max(0, +op.sill || 0) * 10 : 0, oh = Math.max(0, +op.height || 0) * 10;
+        if (height > 0) {
+          if (sill > 0) piece(off, off + wd, Math.min(sill, height));
+          if (oh && height - sill - oh > 0.5) piece(off, off + wd, height - sill - oh, sill + oh);
+        }
+        w.poly(opLayer, [at(off, half), at(off + wd, half), at(off + wd, -half), at(off, -half)], height > 0 ? oh : 0, height > 0 ? sill : 0);
+        if (opLayer === 'Opening') continue;
+        const a = at(off, half), ul = V(sg.u), nl = V(n);
+        w.text('Text', add(add(a, ul, wd * 5), nl, TXT * 2.5), TXT * 1.2, tags.get(op.id));
+        for (const shp of openingShapes(op, a, ul, nl, wd * 10, t, -t / 2, DOOR_FRAME * 10)) {
+          if (shp.line) { w.line(`${opLayer}-Symbol`, shp.line[0], shp.line[1], shp.dash); continue; }
+          const { c, from, to } = shp.arc;
+          const t0 = deg({ x: from.x - c.x, y: from.y - c.y }), t1 = deg({ x: to.x - c.x, y: to.y - c.y });
+          const ccw = (((t1 - t0) % 360) + 360) % 360 <= 180;
+          w.arc(`${opLayer}-Symbol`, c, Math.hypot(from.x - c.x, from.y - c.y), ccw ? t0 : t1, ccw ? t1 : t0, shp.dash);
+        }
+      }
+      piece(pos, sg.len);
+      // Its number on one side; its length (after a chain through its openings) on the other.
+      const no = freeWalls(room).indexOf(sh) + 1;
+      w.text('Text', P(add(add(sg.p0, sg.u, sg.len / 2), n, half + 25)), TXT * 1.5, `F${no}`);
+      const off = (x, d) => add(add(sg.p0, sg.u, x), n, -(half + d));
+      const breaks = chainBreaks(sg);
+      if (breaks) breaks.slice(1).forEach((x, k) => dim(off(breaks[k], DIM_OFF / 10), off(x, DIM_OFF / 10)));
+      dim(off(0, (breaks ? DIM_OFF + DIM_ROW : DIM_OFF) / 10), off(sg.len, (breaks ? DIM_OFF + DIM_ROW : DIM_OFF) / 10));
       continue;
     }
     if (sh.type === 'line') w.line('Furniture', a, b);

@@ -10,6 +10,7 @@ const ACC = '#1f6f5c';
 const GLASS = '#d6ecf8', GLASS_LINE = '#2f86c0';
 const CLEAR = '#b4540a';   // a free-standing item measured off the walls
 const DIMLINE = '#2c5aa0'; // dimensions drawn on the plan
+const FREE_DIM = '#555';   // a free-standing wall's own length
 const RED = '#d93025';
 const FONT = "'Sarabun','Noto Sans Thai','Leelawadee UI',system-ui,sans-serif";
 
@@ -168,7 +169,7 @@ export function openingShapes(o, a, u, n, w, t, mid = 0, fw = 0) {
 // opening has its own `tag`. Returns Map opening id → tag.
 export function openingTags(room) {
   const tags = new Map(), count = { door: 0, window: 0 };
-  for (const w of room.walls) {
+  for (const w of [...room.walls, ...freeWalls(room)]) {
     for (const o of w.openings || []) {
       if (!(o.type in count)) continue;
       count[o.type]++;
@@ -251,6 +252,19 @@ export const SHAPE_TYPES = { line: 'Line', rect: 'Rectangle', circle: 'Circle', 
 // Drawn items that run from one point to another: a line, or a free-standing wall (a wall in the
 // room that isn't part of its outline), which has a thickness and a wall type.
 export const segShape = sh => sh.type === 'line' || sh.type === 'wall';
+
+// The free-standing walls of a room (drawn items of type "wall").
+export const freeWalls = room => (room.shapes || []).filter(sh => sh.type === 'wall');
+
+// A free-standing wall as a wall segment, so doors and windows sit on it the way they do on the
+// room's walls: measured from its start (x1, y1), its "inside" face on the left of start → end.
+export function freeWallSeg(sh, defT) {
+  const [p0, p1] = shapePoints(sh), len = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+  if (!len) return null;
+  const u = { x: (p1.x - p0.x) / len, y: (p1.y - p0.y) / len }, left = v => ({ x: -v.y, y: v.x });
+  const t = +sh.thickness > 0 ? +sh.thickness : +defT > 0 ? +defT : WALL_T;
+  return { wall: sh, i: -1, p0, p1, u, len, heading: (Math.atan2(u.y, u.x) * 180) / Math.PI, inward: left(u), inwardOf: left, free: true, glass: sh.kind === 'glass', t };
+}
 
 // A free-standing wall's outline: its thickness centred on the line it was drawn along.
 export function freeWallCorners(sh, defT) {
@@ -526,15 +540,18 @@ export function renderPlan(room, opt = {}) {
 
   // Doors, windows and other openings
   // On a curved wall each opening is drawn straight between its two ends on the arc.
+  // A free-standing wall's thickness is centred on its line, so its openings start from the face
+  // half a thickness to the left.
   const hits = [], tagSpots = [], tags = openingTags(room);
-  for (const sg of g.segs) {
+  const drawOpenings = sg => {
+    const face = sg.free ? sg.t / 2 : 0;
     for (const o of sg.wall.openings || []) {
       const off = clamp(+o.offset || 0, 0, sg.len);
       const w = clamp(+o.width || 0, 0, sg.len - off);
       if (!w) continue;
-      const a = X(segPoint(sg, off).p), b = X(segPoint(sg, off + w).p), r = Math.hypot(b.x - a.x, b.y - a.y);
-      const u = { x: (b.x - a.x) / r, y: (b.y - a.y) / r }, n = inward(u), o2 = { x: -n.x, y: -n.y };
-      const tw = sg.gap ? T : tPx(sg), jamb = `stroke="${sg.glass ? GLASS_LINE : INK}" stroke-width="${f(Z(1))}"`;
+      const a = X(add(segPoint(sg, off).p, sg.inward, face)), b = X(add(segPoint(sg, off + w).p, sg.inward, face)), r = Math.hypot(b.x - a.x, b.y - a.y);
+      const u = { x: (b.x - a.x) / r, y: (b.y - a.y) / r }, n = sg.free ? sg.inwardOf(u) : inward(u), o2 = { x: -n.x, y: -n.y };
+      const tw = sg.free ? sg.t * s : sg.gap ? T : tPx(sg), jamb = `stroke="${sg.glass ? GLASS_LINE : INK}" stroke-width="${f(Z(1))}"`;
       // Cut the wall away through its thickness, then close the cut with a jamb line each side.
       out.push(`<polygon points="${[add(a, n, Z(1)), add(b, n, Z(1)), add(b, o2, tw + Z(1)), add(a, o2, tw + Z(1))].map(p => `${f(p.x)},${f(p.y)}`).join(' ')}" fill="#fff"/>`);
       out.push(line(a, add(a, o2, tw), jamb), line(b, add(b, o2, tw), jamb));
@@ -558,7 +575,8 @@ export function renderPlan(room, opt = {}) {
         out.push(line(a, b, `stroke="${INK}" stroke-width="${f(Z(1.2))}" ${dash(4, 3)}`), line(add(a, o2, tw), add(b, o2, tw), `stroke="${INK}" stroke-width="${f(Z(1.2))}" ${dash(4, 3)}`));
       }
     }
-  }
+  };
+  for (const sg of g.segs) drawOpenings(sg);
 
   // Drawn shapes (counters etc.), under the labels
   const SHAPE = '#4f6a8f', shapeLabels = [], wallLengths = [];
@@ -579,7 +597,7 @@ export function renderPlan(room, opt = {}) {
       if (on) out.push(`<polygon points="${pts}" fill="${ACC}" fill-opacity="0.55" stroke="${ACC}" stroke-width="${f(Z(1.5))}"/>`);
       const [a, b] = shapePoints(sh).map(X);
       if (tag) out.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Math.max(Z(18), (+sh.thickness || opt.wallT || WALL_T) * s))}"${tag}`));
-      if (on || draft) wallLengths.push({ a, b, len: Math.hypot(+sh.x2 - +sh.x1, +sh.y2 - +sh.y1) });
+      if (draft) wallLengths.push({ a, b, len: Math.hypot(+sh.x2 - +sh.x1, +sh.y2 - +sh.y1) });
     } else if (sh.type === 'line') {
       const [a, b] = shapePoints(sh).map(X);
       out.push(line(a, b, `${look} stroke-linecap="round"`));
@@ -592,6 +610,8 @@ export function renderPlan(room, opt = {}) {
     }
     if (sh.label && !mini) shapeLabels.push({ p: X(shapeCenter(sh)), label: sh.label, on });
   }
+
+  for (const sh of freeWalls(room)) { const sg = freeWallSeg(sh, opt.wallT); if (sg) drawOpenings(sg); }
 
   // Columns: on a wall, and free-standing ones anywhere in the plan
   const allCols = [
@@ -683,6 +703,22 @@ export function renderPlan(room, opt = {}) {
       const ang = readableAngle(u), up = Math.abs(Math.atan2(u.y, u.x)) > Math.PI / 2 ? 1 : -1;
       text(prio, add(mid(a, b), nv, up * Z(7)), fmtLen(Math.hypot(q.x - p.x, q.y - p.y), opt.unit), 9, ang, `fill="${color}" font-weight="600" ${halo}`);
     };
+    // Free-standing walls: a number (F1, F2…) on one side, and on the other their length, with a
+    // chain through any doors and windows first, like the room's walls.
+    freeWalls(room).forEach((sh, i) => {
+      const sg = freeWallSeg(sh, opt.wallT);
+      if (!sg) return;
+      const half = sg.t / 2, on = sh.id === opt.selectedOp, name = `F${i + 1}`;
+      const c = add(X(add(mid(sg.p0, sg.p1), sg.inward, half)), sg.inward, Z(14)), bw = Z(22), bh = Z(16);
+      label(on ? 0 : 4, c, bw, bh, 0,
+        `<rect x="${f(c.x - bw / 2)}" y="${f(c.y - bh / 2)}" width="${f(bw)}" height="${f(bh)}" rx="${f(bh / 2)}" fill="${on ? ACC : '#fff'}" stroke="${on ? ACC : DIM}" stroke-width="${f(Z(1))}"/>` +
+        `<text x="${f(c.x)}" y="${f(c.y)}" text-anchor="middle" dominant-baseline="central" font-size="${f(Z(10))}" font-weight="700" fill="${on ? '#fff' : INK}">${name}</text>`);
+      const along = (x, px) => add(add(sg.p0, sg.u, x), sg.inward, -(half + Z(px) / s));
+      const breaks = chainBreaks(sg);
+      if (breaks) breaks.slice(1).forEach((x, k) => dimLine(along(breaks[k], 16), along(x, 16), FREE_DIM, 3));
+      dimLine(along(0, breaks ? 32 : 16), along(sg.len, breaks ? 32 : 16), FREE_DIM, 1 + 1 / (1 + sg.len));
+    });
+
     // Free-standing columns are measured off the nearest walls across and up/down; whatever is
     // picked (a column or a drawn rectangle / circle) off all the walls around it.
     const items = [...(room.columns || []).map(c => ({ c, on: c.id === opt.selectedOp })),

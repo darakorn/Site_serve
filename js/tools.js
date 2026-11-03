@@ -11,7 +11,7 @@
 // and everything else to a 5 cm grid. Two fingers still pinch-zoom (zoom.js); a second finger
 // cancels whatever one finger was doing.
 
-import { geometry, shapePoints, segShape, normAngle, freeColumnShape, rectCorners, turnAbout } from './plan.js';
+import { geometry, shapePoints, segShape, freeWalls, freeWallSeg, normAngle, freeColumnShape, rectCorners, turnAbout } from './plan.js';
 
 const GRID = 5, SNAP_PX = 14, ANGLE_SNAP = 7;
 const STD_TURNS = [90, -90, 45, -45, 0];
@@ -110,7 +110,9 @@ export function attachPlanTools(box, ctx) {
     return { heading: baseHeading + rel, len: round1(len) };
   };
 
-  const segOf = wallId => geometry(room).segs.find(sg => sg.wall.id === wallId);
+  // The room's walls and the free-standing ones, as segments doors and windows sit on.
+  const hostSegs = () => [...geometry(room).segs, ...freeWalls(room).map(sh => freeWallSeg(sh)).filter(Boolean)];
+  const segOf = wallId => hostSegs().find(sg => sg.wall.id === wallId);
 
   // The plan's current scale and position, pinned for the whole drag.
   const pin = () => {
@@ -330,7 +332,7 @@ export function attachPlanTools(box, ctx) {
 
   // Dragging either end of a door / window / opening along its wall; the other end stays put.
   function resizeOpening(d, p, ppcm) {
-    const sg = geometry(room).segs.find(s => s.wall.openings.some(x => x.id === d.target));
+    const sg = hostSegs().find(s => (s.wall.openings || []).some(x => x.id === d.target));
     if (!sg) return null;
     const o = sg.wall.openings.find(x => x.id === d.target);
     const a = +o.offset || 0, b = a + (+o.width || 0), MIN = GRID;

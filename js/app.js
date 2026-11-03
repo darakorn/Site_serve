@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { geometry, segPoint, WALL_KINDS, WALL_T, rectCorners, turnAbout, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, SLIDE_WAYS, slideWay, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, segShape, shapePoints } from './plan.js';
+import { geometry, segPoint, WALL_KINDS, WALL_T, rectCorners, turnAbout, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, SLIDE_WAYS, slideWay, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, segShape, freeWalls, freeWallSeg, shapePoints } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.26';
+const APP_VERSION = '1.0.28';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -325,7 +325,7 @@ const opName = (tags, o) => tags.get(o.id) || OPEN_TYPES[o.type];
 
 function openingRow(w, o) {
   const at = `data-w="${w.id}" data-o="${o.id}"`;
-  const idx = P && curRoom().walls.indexOf(w);
+  const idx = P && curRoom().walls.indexOf(w), from = idx >= 0 ? `corner ${cornerName(idx)}` : 'wall start';
   const tags = openingTags(curRoom()), before = w.openings.slice(0, w.openings.indexOf(o));
   const ref = o.ref && before.find(x => x.id === o.ref);
   return `<div class="op${selectedOp === o.id ? ' picked' : ''}" id="op-${o.id}">
@@ -333,10 +333,10 @@ function openingRow(w, o) {
     <button class="icon" data-act="del-op" ${at} aria-label="Delete">✕</button>
     ${kindRow(o, at, tags.get(o.id) || '')}
     ${before.length ? `<label class="field op-ref"><span>Measure from</span><select data-f="op.ref" ${at}>
-      <option value="">Corner ${cornerName(idx)}</option>
+      <option value="">${from[0].toUpperCase() + from.slice(1)}</option>
       ${before.map(x => `<option value="${x.id}"${ref === x ? ' selected' : ''}>End of ${esc(opName(tags, x))}</option>`).join('')}</select></label>` : ''}
     <div class="op-f">
-      ${ref ? lenField(`From ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`From corner ${cornerName(idx)}`, 'op.offset', o.offset, at)}
+      ${ref ? lenField(`From ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`From ${from}`, 'op.offset', o.offset, at)}
       ${lenField('Width', 'op.width', o.width, at)}
       ${lenField('Height', 'op.height', o.height, at)}
       ${o.type === 'window' ? lenField('Sill height', 'op.sill', o.sill, at) : ''}
@@ -436,7 +436,12 @@ function wallCard(room, w, i) {
 }
 
 // ---------- shapes drawn into the plan ----------
-const shapeName = sh => (sh.label ? `${sh.label} (${SHAPE_TYPES[sh.type]})` : SHAPE_TYPES[sh.type]);
+// A free-standing wall goes by its number on the plan (F1, F2…).
+const freeWallNo = sh => { for (const r of P.rooms) { const i = freeWalls(r).indexOf(sh); if (i >= 0) return `F${i + 1}`; } return ''; };
+const shapeName = sh => {
+  const type = sh.type === 'wall' ? `${SHAPE_TYPES.wall} ${freeWallNo(sh)}` : SHAPE_TYPES[sh.type];
+  return sh.label ? `${sh.label} (${type})` : type;
+};
 const SHAPE_FIELDS = {
   wall: [['x1', 'Start x'], ['y1', 'Start y'], ['x2', 'End x'], ['y2', 'End y']],
   line: [['x1', 'Start x'], ['y1', 'Start y'], ['x2', 'End x'], ['y2', 'End y']],
@@ -452,11 +457,19 @@ function shapesCard(room) {
     ${list.map(sh => {
       const at = `data-s="${sh.id}"`;
       return `<div class="op shape${selectedOp === sh.id ? ' picked' : ''}" id="op-${sh.id}">
-        <input data-f="shape.label" ${at} value="${esc(sh.label || '')}" placeholder="Name, e.g. Counter (${SHAPE_TYPES[sh.type]})">
+        <input data-f="shape.label" ${at} value="${esc(sh.label || '')}" placeholder="${sh.type === 'wall' ? `Name, e.g. Partition (${shapeName(sh)})` : `Name, e.g. Counter (${SHAPE_TYPES[sh.type]})`}">
         <button class="icon" data-act="del-shape" ${at} aria-label="Delete">✕</button>
         <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}${sh.type === 'rect' ? field('Rotation (°)', 'shape.rot', sh.rot ?? '', 'number', `${at} inputmode="text" placeholder="0"`) : ''}${sh.type === 'wall' ? `
           <label class="field"><span>Wall type</span><select data-f="shape.kind" ${at}>${Object.entries(WALL_KINDS).map(([k, l]) => `<option value="${k}"${(sh.kind || '') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
           ${lenField('Thickness', 'shape.thickness', sh.thickness, `${at} placeholder="${esc(fmtLen(P.wallThickness ?? WALL_T, P.unit))} (default)"`)}` : ''}</div>
+        ${sh.type === 'wall' ? `${(sh.openings || []).map(o => openingRow(sh, o)).join('')}
+        <p class="hint">Doors and windows are measured from the wall's start (x1, y1).</p>
+        <div class="btns">
+          <button class="btn sm" data-act="add-op" data-type="door" data-w="${sh.id}">+ Door</button>
+          <button class="btn sm" data-act="add-op" data-type="window" data-w="${sh.id}">+ Window</button>
+          <button class="btn sm" data-act="add-op" data-type="window" data-style="open" data-w="${sh.id}">+ Window opening</button>
+          <button class="btn sm" data-act="add-op" data-type="opening" data-w="${sh.id}">+ Opening</button>
+        </div>` : ''}
       </div>`;
     }).join('')}
     ${(room.columns || []).map(c => {
@@ -503,8 +516,8 @@ function handlesFor(room) {
   if (dm) return [{ x: +dm.x1, y: +dm.y1, id: 'dim-1', for: dm.id }, { x: +dm.x2, y: +dm.y2, id: 'dim-2', for: dm.id }];
   const g = geometry(room);
   // A picked door / window / opening: its two ends, to make it wider or narrower.
-  for (const s of g.segs) {
-    const o = s.wall.openings.find(x => x.id === selectedOp);
+  for (const s of [...g.segs, ...freeWalls(room).map(sh => freeWallSeg(sh)).filter(Boolean)]) {
+    const o = (s.wall.openings || []).find(x => x.id === selectedOp);
     if (!o) continue;
     const off = Math.min(Math.max(+o.offset || 0, 0), s.len), end = Math.min(off + (+o.width || 0), s.len);
     out.push({ ...segPoint(s, off).p, id: 'op-start', for: o.id }, { ...segPoint(s, end).p, id: 'op-end', for: o.id });
@@ -518,11 +531,14 @@ function handlesFor(room) {
   return out;
 }
 
+// What doors and windows hang on: one of the room's walls, or a free-standing wall.
+const hostOf = (room, id) => (id ? room?.walls.find(x => x.id === id) || freeWalls(room || { shapes: [] }).find(x => x.id === id) : null);
+
 // What is picked on the plan: a door / window / opening, a column, a drawn item, or — while
 // editing on the plan, where the form is out of sight — the selected wall.
 function pickedItem(room) {
-  for (const w of room.walls) {
-    const o = w.openings.find(x => x.id === selectedOp);
+  for (const w of [...room.walls, ...freeWalls(room)]) {
+    const o = (w.openings || []).find(x => x.id === selectedOp);
     if (o) return { kind: 'op', w, o, name: openingTags(room).get(o.id) || OPEN_TYPES[o.type] };
     const c = (w.columns || []).find(x => x.id === selectedOp);
     if (c) return { kind: 'col', w, c, name: 'Column' };
@@ -648,7 +664,7 @@ function fmtOpening(o, wallIndex) {
   const st = openStyle(o);
   const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ×${st.leaves}` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' opens out' : ''}${o.type === 'door' && st.style !== 'slide' && o.hinge === 'right' ? ' hinge right' : ''}${o.type === 'door' && st.style === 'slide' ? `, ${SLIDE_WAYS[slideWay(o, st.leaves)].toLowerCase()}` : ''}` : '';
   const tag = openingTags(curRoomOf(o)).get(o.id);
-  return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (from corner ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)}${o.type === 'window' && o.sill !== undefined && o.sill !== '' ? `, sill ${fmtLen(o.sill, P.unit)}` : ''})`;
+  return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (from ${wallIndex >= 0 ? `corner ${cornerName(wallIndex)}` : 'wall start'} ${fmtLen(o.offset, P.unit)}${o.type === 'window' && o.sill !== undefined && o.sill !== '' ? `, sill ${fmtLen(o.sill, P.unit)}` : ''})`;
 }
 
 function fmtFreeColumn(c) {
@@ -657,7 +673,7 @@ function fmtFreeColumn(c) {
 }
 
 // Room holding an opening, for its tag in the report (which lists every room).
-const curRoomOf = o => P.rooms.find(r => r.walls.some(w => w.openings.includes(o)));
+const curRoomOf = o => P.rooms.find(r => [...r.walls, ...freeWalls(r)].some(w => (w.openings || []).includes(o)));
 
 function fmtColumn(c, wallIndex) {
   const u = P.unit;
@@ -672,7 +688,7 @@ function roomReport(r) {
     <h2>${esc(r.name)}</h2>
     <div class="r-plan">${renderPlan(r, { wallT: P.wallThickness, photoCounts: photoCounts(r), unit: P.unit })}</div>
     <p class="r-sum">${parts.map(([k, v]) => `${k} <b>${v}</b>`).join(' · ')}</p>
-    ${r.shapes?.length ? `<p>Items: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : sh.type === 'wall' ? ` ${fmtLen(Math.hypot(sh.x2 - sh.x1, sh.y2 - sh.y1), P.unit)} long${sh.kind ? `, ${WALL_KINDS[sh.kind].toLowerCase()}` : ''}${+sh.thickness > 0 ? `, ${fmtLen(sh.thickness, P.unit)} thick` : ''}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
+    ${r.shapes?.length ? `<p>Items: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : sh.type === 'wall' ? ` ${fmtLen(Math.hypot(sh.x2 - sh.x1, sh.y2 - sh.y1), P.unit)} long${sh.kind ? `, ${WALL_KINDS[sh.kind].toLowerCase()}` : ''}${+sh.thickness > 0 ? `, ${fmtLen(sh.thickness, P.unit)} thick` : ''}${sh.openings?.length ? ` (${sh.openings.map(o => fmtOpening(o, -1)).join('; ')})` : ''}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
     <table class="r-table"><thead><tr><th>Wall</th><th>Length (${unitLabel()})</th><th>Doors / windows / columns</th><th>Notes</th></tr></thead><tbody>
       ${(r.columns || []).length ? `<tr><td>–</td><td>–</td><td>${r.columns.map(fmtFreeColumn).join('<br>')}</td><td></td></tr>` : ''}
@@ -941,7 +957,7 @@ $app.addEventListener('click', async e => {
     return;
   }
   const room = curRoom();
-  const w = t.dataset.w && room?.walls.find(x => x.id === t.dataset.w);
+  const w = t.dataset.w && hostOf(room, t.dataset.w);
   switch (t.dataset.act) {
     case 'new-project': {
       const p = { id: uid(), name: 'New project', client: '', site: '', date: today(), surveyor: '', note: '', rooms: [], createdAt: Date.now(), updatedAt: Date.now() };
@@ -1015,7 +1031,10 @@ $app.addEventListener('click', async e => {
       offsetDist = d;
       const dx = +sh.x2 - +sh.x1, dy = +sh.y2 - +sh.y1, len = Math.hypot(dx, dy), k = (+t.dataset.side * d) / len;
       const r = v => Math.round(v * 10) / 10;
-      room.shapes.push({ ...sh, id: uid(), x1: r(+sh.x1 - dy * k), y1: r(+sh.y1 + dx * k), x2: r(+sh.x2 - dy * k), y2: r(+sh.y2 + dx * k) });
+      room.shapes.push({ ...JSON.parse(JSON.stringify(sh)), id: uid(), x1: r(+sh.x1 - dy * k), y1: r(+sh.y1 + dx * k), x2: r(+sh.x2 - dy * k), y2: r(+sh.y2 + dx * k) });
+      // Its doors and windows come along under new ids, still measured from each other.
+      const ids = new Map((room.shapes.at(-1).openings || []).map(o => [o.id, uid()]));
+      for (const o of room.shapes.at(-1).openings || []) { o.id = ids.get(o.id); if (o.ref) o.ref = ids.get(o.ref); }
       selectedOp = room.shapes.at(-1).id;
       save();
       await rerender();
@@ -1053,7 +1072,7 @@ $app.addEventListener('click', async e => {
     case 'wall-kind': if (t.dataset.kind) w.kind = t.dataset.kind; else delete w.kind; save(); rerender(); break;
     case 'add-op': {
       // A second door/window is measured on from the last one by default.
-      const last = w.openings.at(-1);
+      const last = (w.openings ||= []).at(-1);
       w.openings.push({ id: uid(), type: t.dataset.type, offset: 30, width: 80, height: 200, ...OPEN_DEFAULTS[t.dataset.type], ...(t.dataset.style ? { style: t.dataset.style } : {}), ...(last ? { ref: last.id, refGap: 50 } : {}) });
       resolveRefs(w);
       save();
@@ -1072,7 +1091,10 @@ $app.addEventListener('click', async e => {
         for (const o of w.openings || []) { o.id = fresh(o.id); if (o.ref) o.ref = fresh(o.ref); }
         for (const c of w.columns || []) c.id = fresh(c.id);
       }
-      for (const sh of copy.shapes || []) sh.id = fresh(sh.id);
+      for (const sh of copy.shapes || []) {
+        sh.id = fresh(sh.id);
+        for (const o of sh.openings || []) { o.id = fresh(o.id); if (o.ref) o.ref = fresh(o.ref); }
+      }
       for (const c of copy.columns || []) c.id = fresh(c.id);
       for (const d of copy.dims || []) d.id = fresh(d.id);
       P.rooms.splice(P.rooms.indexOf(room) + 1, 0, copy);
@@ -1204,7 +1226,7 @@ $app.addEventListener('input', e => {
   if (!key) return;
   const [scope, prop] = key.split('.');
   const room = curRoom();
-  const w = room?.walls.find(x => x.id === el.dataset.w);
+  const w = hostOf(room, el.dataset.w);
   const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c), shape: room?.shapes?.find(x => x.id === el.dataset.s), fcol: room?.columns?.find(x => x.id === el.dataset.fc) }[scope];
   if (!target) return;
   const v = parseFloat(el.value);
