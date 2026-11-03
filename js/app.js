@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.24';
+const APP_VERSION = '1.0.25';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -30,6 +30,7 @@ let selectedOp = null;    // door/window/column/shape picked in the plan, highli
 let planTool = null;      // 'edit' | 'wall' | 'light' | 'glass' | 'column' | 'dim' | 'line' | 'rect' | 'circle' while working on the plan
 let preview = {};         // { draft, draftWall, snapAt } shown while a plan drag is under way
 let snapOn = true;
+let offsetDist = 10;       // cm, the last distance a line was offset by
 try { snapOn = localStorage.getItem('plan-snap') !== '0'; } catch { /* storage unavailable */ }
 // Wall list shows one line per wall, with only the selected wall opened up. Kept per device.
 let wallsCollapsed = false;
@@ -534,6 +535,18 @@ function pickedItem(room) {
   return null;
 }
 
+// Offset a picked line: a distance, and a button for each side, its arrow pointing the way the
+// copy goes on the plan.
+function offsetControls(sh) {
+  const dx = +sh.x2 - +sh.x1, dy = +sh.y2 - +sh.y1, len = Math.hypot(dx, dy);
+  if (!len) return '';
+  const n = { x: -dy / len, y: dx / len };
+  const arrow = v => '→↘↓↙←↖↑↗'[(Math.round(Math.atan2(v.y, v.x) / (Math.PI / 4)) + 8) % 8];
+  return `<label class="offset-f">⇉ Offset <input id="offset-d" type="number" inputmode="decimal" step="any" value="${toUnit(offsetDist, P.unit)}"> ${unitLabel()}</label>
+    <button class="btn sm" data-act="offset-line" data-side="1" aria-label="Offset this way">${arrow(n)}</button>
+    <button class="btn sm" data-act="offset-line" data-side="-1" aria-label="Offset the other way">${arrow({ x: -n.x, y: -n.y })}</button>`;
+}
+
 // Quick buttons under the plan for what was picked there: delete it, and for a door flip the
 // hinge side and in / out.
 function pickQuick(room) {
@@ -546,6 +559,7 @@ function pickQuick(room) {
     ${st && st.style !== 'slide' ? `<button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>` : ''}
     ${st && st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
     ${st && st.style === 'slide' ? `<button class="btn sm" data-act="door-slide" ${at}>⇄ ${SLIDE_WAYS[slideWay(o, st.leaves)]}</button>` : ''}
+    ${it.kind === 'shape' && it.sh.type === 'line' ? offsetControls(it.sh) : ''}
     ${(it.kind === 'fcol' && it.c.shape !== 'round') || (it.kind === 'shape' && it.sh.type === 'rect') ? `<button class="btn sm" data-act="rot90">⟳ 90°${+(it.c || it.sh).rot ? ` (now ${+(it.c || it.sh).rot}°)` : ''}</button>` : ''}
     ${it.kind === 'wall' && it.w.gap ? `<button class="btn sm" data-act="fill-gap" data-w="${it.w.id}">↺ Put a wall here</button>` : ''}
     ${it.kind === 'wall' && !it.w.gap ? Object.entries(KIND_BUTTONS).map(([k, l]) => `<button class="btn sm${(it.w.kind || '') === k ? ' on' : ''}" data-act="wall-kind" data-kind="${k}" data-w="${it.w.id}">${l}</button>`).join('') : ''}
@@ -979,6 +993,19 @@ $app.addEventListener('click', async e => {
       let blob;
       try { blob = await takePhoto(room?.name || ''); } catch { input.click(); break; }
       if (blob) await addPhotos([blob], photoRoom, photoWall || null, true);
+      break;
+    }
+    case 'offset-line': {
+      // A parallel copy at the typed distance, picked so the next tap offsets on from it.
+      const sh = room.shapes?.find(x => x.id === selectedOp), d = fromUnit(parseFloat(document.getElementById('offset-d')?.value), P.unit);
+      if (!sh || !(d > 0)) break;
+      offsetDist = d;
+      const dx = +sh.x2 - +sh.x1, dy = +sh.y2 - +sh.y1, len = Math.hypot(dx, dy), k = (+t.dataset.side * d) / len;
+      const r = v => Math.round(v * 10) / 10;
+      room.shapes.push({ ...sh, id: uid(), x1: r(+sh.x1 - dy * k), y1: r(+sh.y1 + dx * k), x2: r(+sh.x2 - dy * k), y2: r(+sh.y2 + dx * k) });
+      selectedOp = room.shapes.at(-1).id;
+      save();
+      await rerender();
       break;
     }
     case 'rot90': {

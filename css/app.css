@@ -141,6 +141,8 @@ body.plan-full { overflow: hidden; }
 .wall-head .chev.open { font-size: 22px; color: var(--muted); transform: rotate(90deg); }
 .door-quick { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--acc); border-radius: 12px; background: var(--card); }
 .door-quick b { color: var(--acc); }
+.offset-f { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
+.offset-f input { width: 5.5em; min-height: 36px; padding: 4px 6px; font: inherit; border: 1px solid var(--line, #ccc); border-radius: 8px; }
 .wall-open .chev { font-size: 22px; color: var(--muted); }
 .op.picked { box-shadow: 0 0 0 2px var(--acc); }
 .row.bulge { align-items: end; }
