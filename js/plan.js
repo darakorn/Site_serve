@@ -247,9 +247,20 @@ export function segPoint(sg, x) {
 
 // Things drawn into the plan (counters, built-ins…), in plan cm from corner A, y down:
 // line { x1, y1, x2, y2 }, rect { x, y, w, h }, circle { x, y (centre), d (diameter) }; each may have a label.
-export const SHAPE_TYPES = { line: 'Line', rect: 'Rectangle', circle: 'Circle' };
+export const SHAPE_TYPES = { line: 'Line', rect: 'Rectangle', circle: 'Circle', wall: 'Free wall' };
+// Drawn items that run from one point to another: a line, or a free-standing wall (a wall in the
+// room that isn't part of its outline), which has a thickness and a wall type.
+export const segShape = sh => sh.type === 'line' || sh.type === 'wall';
+
+// A free-standing wall's outline: its thickness centred on the line it was drawn along.
+export function freeWallCorners(sh, defT) {
+  const [p, q] = shapePoints(sh), len = Math.hypot(q.x - p.x, q.y - p.y);
+  if (!len) return null;
+  const t = +sh.thickness > 0 ? +sh.thickness : +defT > 0 ? +defT : WALL_T, n = { x: -(q.y - p.y) / len, y: (q.x - p.x) / len };
+  return [add(p, n, t / 2), add(q, n, t / 2), add(q, n, -t / 2), add(p, n, -t / 2)];
+}
 export function shapePoints(sh) {
-  if (sh.type === 'line') return [{ x: +sh.x1 || 0, y: +sh.y1 || 0 }, { x: +sh.x2 || 0, y: +sh.y2 || 0 }];
+  if (segShape(sh)) return [{ x: +sh.x1 || 0, y: +sh.y1 || 0 }, { x: +sh.x2 || 0, y: +sh.y2 || 0 }];
   if (sh.type === 'rect') return [{ x: +sh.x || 0, y: +sh.y || 0 }, { x: (+sh.x || 0) + (+sh.w || 0), y: (+sh.y || 0) + (+sh.h || 0) }];
   const r = (+sh.d || 0) / 2;
   return [{ x: (+sh.x || 0) - r, y: (+sh.y || 0) - r }, { x: (+sh.x || 0) + r, y: (+sh.y || 0) + r }];
@@ -550,12 +561,26 @@ export function renderPlan(room, opt = {}) {
   }
 
   // Drawn shapes (counters etc.), under the labels
-  const SHAPE = '#4f6a8f', shapeLabels = [];
+  const SHAPE = '#4f6a8f', shapeLabels = [], wallLengths = [];
   for (const sh of shapes) {
     const on = sh.id === opt.selectedOp, draft = sh.id === '__draft';
     const tag = !mini && !opt.export && !draft ? ` data-shape="${sh.id}" style="cursor:pointer"` : '';
     const look = `stroke="${on ? ACC : SHAPE}" stroke-width="${f(Z(on ? 2 : 1.4))}"${draft ? ' ' + dash(4, 3) : ''}`;
-    if (sh.type === 'line') {
+    if (sh.type === 'wall') {
+      // Drawn like the room's walls of the same type, to scale.
+      const ring = freeWallCorners(sh, opt.wallT);
+      if (!ring) continue;
+      const pts = ring.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ');
+      const kind = sh.kind === 'glass' ? 'glass' : sh.kind === 'light' ? 'light' : 'solid', ink = kind === 'glass' ? GLASS_LINE : INK;
+      const fade = draft ? ' fill-opacity="0.5"' : '';
+      if (kind === 'solid') out.push(`<polygon points="${pts}" fill="${INK}"${fade} stroke="${INK}" stroke-width="${f(Z(0.6))}"/>`);
+      else out.push(`<polygon points="${pts}" fill="${kind === 'glass' ? GLASS : '#fff'}"${fade} stroke="${ink}" stroke-width="${f(Z(mini ? 0.8 : 1.2))}"/>`);
+      if (kind === 'glass') out.push(line(X(mid(ring[0], ring[3])), X(mid(ring[1], ring[2])), `stroke="${GLASS_LINE}" stroke-width="${f(Z(1.2))}"`));
+      if (on) out.push(`<polygon points="${pts}" fill="${ACC}" fill-opacity="0.55" stroke="${ACC}" stroke-width="${f(Z(1.5))}"/>`);
+      const [a, b] = shapePoints(sh).map(X);
+      if (tag) out.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Math.max(Z(18), (+sh.thickness || opt.wallT || WALL_T) * s))}"${tag}`));
+      if (on || draft) wallLengths.push({ a, b, len: Math.hypot(+sh.x2 - +sh.x1, +sh.y2 - +sh.y1) });
+    } else if (sh.type === 'line') {
       const [a, b] = shapePoints(sh).map(X);
       out.push(line(a, b, `${look} stroke-linecap="round"`));
       if (tag) out.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(16))}"${tag}`));
@@ -642,6 +667,10 @@ export function renderPlan(room, opt = {}) {
     }
 
     for (const { p, label: str, on } of shapeLabels) text(on ? 0 : 2.8, p, str, 9, 0, `fill="${on ? ACC : SHAPE}" font-weight="600" ${halo}`);
+    for (const { a, b, len } of wallLengths) {
+      const L = Math.hypot(b.x - a.x, b.y - a.y), u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+      text(0.3, add(mid(a, b), { x: -u.y, y: u.x }, -Z(14)), fmtLen(len, opt.unit), 11, readableAngle(u), `font-weight="700" fill="${ACC}" ${halo}`);
+    }
 
     // A dimension between two plan points: the line, a tick at each end, the length above it.
     const dimLine = (p, q, color, prio, attrs = '') => {

@@ -6,12 +6,12 @@
 //           a light wall or a glass wall).
 //   column — tap to drop a free-standing column (drag it later in edit).
 //   dim   — drag between two points for a dimension.
-//   line / rect / circle — drag out a shape.
+//   line / rect / circle / fwall — drag out a shape (fwall: a free-standing wall).
 // With snap on, points stick to room corners, shape points and walls nearby, angles to 45° steps
 // and everything else to a 5 cm grid. Two fingers still pinch-zoom (zoom.js); a second finger
 // cancels whatever one finger was doing.
 
-import { geometry, shapePoints, normAngle, freeColumnShape, rectCorners, turnAbout } from './plan.js';
+import { geometry, shapePoints, segShape, normAngle, freeColumnShape, rectCorners, turnAbout } from './plan.js';
 
 const GRID = 5, SNAP_PX = 14, ANGLE_SNAP = 7;
 const STD_TURNS = [90, -90, 45, -45, 0];
@@ -126,7 +126,7 @@ export function attachPlanTools(box, ctx) {
     if (tool === 'wall' || tool === 'light' || tool === 'glass') return { kind: 'wall', wallKind: tool === 'wall' ? null : tool };
     if (tool === 'column') return { kind: 'col-new' };
     if (tool === 'dim') return { kind: 'dim-new', a: snapPoint(p, ppcm).p };
-    if (tool === 'line' || tool === 'rect' || tool === 'circle') return { kind: 'shape-new', a: snapPoint(p, ppcm).p };
+    if (tool === 'line' || tool === 'rect' || tool === 'circle' || tool === 'fwall') return { kind: 'shape-new', a: snapPoint(p, ppcm).p };
     if (tool !== 'edit') return null;
 
     const handle = el.closest?.('[data-handle]')?.dataset.handle;
@@ -195,7 +195,7 @@ export function attachPlanTools(box, ctx) {
       else {
         const { heading, len } = aim(a, b, 0, !!s.at);
         const e2 = s.at ? b : add(a, dirOf(heading), len);
-        d.result = { type: 'line', x1: a.x, y1: a.y, x2: round1(e2.x), y2: round1(e2.y) };
+        d.result = { type: t === 'fwall' ? 'wall' : 'line', x1: a.x, y1: a.y, x2: round1(e2.x), y2: round1(e2.y) };
       }
       show({ draft: d.result, snapAt: s.at });
       return;
@@ -203,10 +203,10 @@ export function attachPlanTools(box, ctx) {
     if (d.kind === 'shape-move') {
       const { sh, orig } = d, delta = sub(p, d.start);
       // Snap the shape by its first point; the rest follows.
-      const key = orig.type === 'line' ? { x: +orig.x1, y: +orig.y1 } : { x: +orig.x, y: +orig.y };
+      const key = segShape(orig) ? { x: +orig.x1, y: +orig.y1 } : { x: +orig.x, y: +orig.y };
       const s = snapPoint(add(key, delta, 1), ppcm, { skipShape: sh.id });
       const dx = s.p.x - key.x, dy = s.p.y - key.y;
-      if (orig.type === 'line') Object.assign(sh, { x1: round1(+orig.x1 + dx), y1: round1(+orig.y1 + dy), x2: round1(+orig.x2 + dx), y2: round1(+orig.y2 + dy) });
+      if (segShape(orig)) Object.assign(sh, { x1: round1(+orig.x1 + dx), y1: round1(+orig.y1 + dy), x2: round1(+orig.x2 + dx), y2: round1(+orig.y2 + dy) });
       else Object.assign(sh, { x: round1(+orig.x + dx), y: round1(+orig.y + dy) });
       snapAt = s.at;
     } else if (d.kind === 'op-move') {
@@ -318,7 +318,7 @@ export function attachPlanTools(box, ctx) {
     const A = P[0];
     d.shift = Math.hypot(A.x, A.y) > 1e-9 ? A : null;
     for (const sh of room.shapes) {
-      if (sh.type === 'line') Object.assign(sh, { x1: round1(+sh.x1 - A.x), y1: round1(+sh.y1 - A.y), x2: round1(+sh.x2 - A.x), y2: round1(+sh.y2 - A.y) });
+      if (segShape(sh)) Object.assign(sh, { x1: round1(+sh.x1 - A.x), y1: round1(+sh.y1 - A.y), x2: round1(+sh.x2 - A.x), y2: round1(+sh.y2 - A.y) });
       else Object.assign(sh, { x: round1(+sh.x - A.x), y: round1(+sh.y - A.y) });
     }
     for (const c of room.columns || []) Object.assign(c, { x: round1(+c.x - A.x), y: round1(+c.y - A.y) });
@@ -411,7 +411,7 @@ export function attachPlanTools(box, ctx) {
       return ctx.done(room.columns.at(-1).id, 'col');
     }
     if (d.kind === 'shape-new' && d.result) {
-      const r = d.result, size = Math.max(+r.w || 0, +r.h || 0, +r.d || 0, r.type === 'line' ? Math.hypot(r.x2 - r.x1, r.y2 - r.y1) : 0);
+      const r = d.result, size = Math.max(+r.w || 0, +r.h || 0, +r.d || 0, segShape(r) ? Math.hypot(r.x2 - r.x1, r.y2 - r.y1) : 0);
       if (size >= GRID) {
         (room.shapes ||= []).push({ id: ctx.uid(), label: '', ...r });
         return ctx.done(room.shapes.at(-1).id, 'shape');
