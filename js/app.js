@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { geometry, segPoint, WALL_KINDS, WALL_T, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, SLIDE_WAYS, slideWay, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, shapePoints } from './plan.js';
+import { geometry, segPoint, WALL_KINDS, WALL_T, rectCorners, turnAbout, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, SLIDE_WAYS, slideWay, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, shapePoints } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.23';
+const APP_VERSION = '1.0.24';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -375,7 +375,7 @@ function wallCard(room, w, i) {
       <small>${corners}</small>
       ${wallsCollapsed ? '<span class="chev open">›</span>' : ''}
     </div>
-    <p class="hint">The walls around it stay where they are. Put a wall back here, split the gap to fill part of it, or remove the gap to join the walls either side.</p>
+    <p class="hint">The walls around it stay where they are. Put a wall back here, or split the gap to fill part of it.${gapRemovable(room, w) ? ' At the end of the walls it can also be removed.' : ''}</p>
     <div class="row">
       ${lenField('Length', 'wall.length', w.length, `data-w="${w.id}"`)}
       ${last ? '' : `<label class="field"><span>At corner ${cornerName(i + 1)}</span><select data-turn="${w.id}">
@@ -386,7 +386,7 @@ function wallCard(room, w, i) {
     <div class="btns">
       <button class="btn sm" data-act="fill-gap" data-w="${w.id}">↺ Put a wall here</button>
       <button class="btn sm ghost" data-act="split-wall" data-w="${w.id}">✂ Split in two</button>
-      <button class="btn sm ghost danger" data-act="del-wall" data-w="${w.id}">Remove gap</button>
+      ${gapRemovable(room, w) ? `<button class="btn sm ghost danger" data-act="del-wall" data-w="${w.id}">Remove gap</button>` : ''}
     </div>
   </article>`;
   }
@@ -452,7 +452,7 @@ function shapesCard(room) {
       return `<div class="op shape${selectedOp === sh.id ? ' picked' : ''}" id="op-${sh.id}">
         <input data-f="shape.label" ${at} value="${esc(sh.label || '')}" placeholder="Name, e.g. Counter (${SHAPE_TYPES[sh.type]})">
         <button class="icon" data-act="del-shape" ${at} aria-label="Delete">✕</button>
-        <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}</div>
+        <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}${sh.type === 'rect' ? field('Rotation (°)', 'shape.rot', sh.rot ?? '', 'number', `${at} inputmode="text" placeholder="0"`) : ''}</div>
       </div>`;
     }).join('')}
     ${(room.columns || []).map(c => {
@@ -465,6 +465,7 @@ function shapesCard(room) {
           ${lenField('Centre y', 'fcol.y', c.y, `${at} inputmode="text"`)}
           ${lenField(round ? 'Diameter' : 'Width (x)', 'fcol.width', c.width, at)}
           ${round ? '' : lenField('Depth (y)', 'fcol.depth', c.depth, at)}
+          ${round ? '' : field('Rotation (°)', 'fcol.rot', c.rot ?? '', 'number', `${at} inputmode="text" placeholder="0"`)}
         </div>
       </div>`;
     }).join('')}
@@ -475,6 +476,9 @@ function shapesCard(room) {
 
 const snap = v => Math.round(v / 5) * 5; // drawn shapes snap to 5 cm
 
+// The turn handle sits a little beyond the top edge of what it turns, and goes round with it.
+const turnHandle = (c, depth, rot) => turnAbout({ x: c.x, y: c.y - depth / 2 - 35 }, c, +rot || 0);
+
 // Handles shown in edit mode: the picked shape's grips, or the ends of the picked door / window /
 // opening, or else both ends and the middle of the selected wall.
 function handlesFor(room) {
@@ -482,10 +486,15 @@ function handlesFor(room) {
   const sh = room.shapes?.find(x => x.id === selectedOp);
   if (sh) {
     const [a, b] = shapePoints(sh);
-    if (sh.type === 'rect') [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }].forEach((p, k) => out.push({ ...p, id: `rect-${k}`, for: sh.id }));
+    if (sh.type === 'rect') {
+      rectCorners(sh).forEach((p, k) => out.push({ ...p, id: `rect-${k}`, for: sh.id }));
+      out.push({ ...turnHandle({ x: (+sh.x || 0) + (+sh.w || 0) / 2, y: (+sh.y || 0) + (+sh.h || 0) / 2 }, +sh.h || 0, sh.rot), id: 'rot', for: sh.id, solid: true });
+    }
     else if (sh.type === 'circle') out.push({ x: (+sh.x || 0) + (+sh.d || 0) / 2, y: +sh.y || 0, id: 'circle-r', for: sh.id });
     else out.push({ ...a, id: 'line-1', for: sh.id }, { ...b, id: 'line-2', for: sh.id });
   }
+  const fc = room.columns?.find(x => x.id === selectedOp);
+  if (fc) return fc.shape === 'round' ? [] : [{ ...turnHandle({ x: +fc.x || 0, y: +fc.y || 0 }, +fc.depth || 0, fc.rot), id: 'rot', for: fc.id, solid: true }];
   const dm = room.dims?.find(x => x.id === selectedOp);
   if (dm) return [{ x: +dm.x1, y: +dm.y1, id: 'dim-1', for: dm.id }, { x: +dm.x2, y: +dm.y2, id: 'dim-2', for: dm.id }];
   const g = geometry(room);
@@ -537,9 +546,10 @@ function pickQuick(room) {
     ${st && st.style !== 'slide' ? `<button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>` : ''}
     ${st && st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
     ${st && st.style === 'slide' ? `<button class="btn sm" data-act="door-slide" ${at}>⇄ ${SLIDE_WAYS[slideWay(o, st.leaves)]}</button>` : ''}
+    ${(it.kind === 'fcol' && it.c.shape !== 'round') || (it.kind === 'shape' && it.sh.type === 'rect') ? `<button class="btn sm" data-act="rot90">⟳ 90°${+(it.c || it.sh).rot ? ` (now ${+(it.c || it.sh).rot}°)` : ''}</button>` : ''}
     ${it.kind === 'wall' && it.w.gap ? `<button class="btn sm" data-act="fill-gap" data-w="${it.w.id}">↺ Put a wall here</button>` : ''}
     ${it.kind === 'wall' && !it.w.gap ? Object.entries(KIND_BUTTONS).map(([k, l]) => `<button class="btn sm${(it.w.kind || '') === k ? ' on' : ''}" data-act="wall-kind" data-kind="${k}" data-w="${it.w.id}">${l}</button>`).join('') : ''}
-    <button class="btn sm danger" data-act="del-picked">🗑 ${it.kind === 'wall' && it.w.gap ? 'Remove gap' : 'Delete'}</button>
+    ${it.kind === 'wall' && it.w.gap && !gapRemovable(room, it.w) ? '' : `<button class="btn sm danger" data-act="del-picked">🗑 ${it.kind === 'wall' && it.w.gap ? 'Remove gap' : 'Delete'}</button>`}
     <button class="btn sm icon-btn" data-act="${it.kind === 'wall' ? 'close-wall' : 'unpick'}" aria-label="Close">✕</button>
   </div>`;
 }
@@ -687,10 +697,29 @@ async function selectWall(id, scroll, opId = null, soft = false) {
 
 // Deleting a wall leaves a gap in its place (a dashed line), so the walls after it don't move.
 // Deleting the gap then takes it out of the chain: the walls after it move up to join on.
+// A gap can only go where nothing else moves: at the end of the walls, or at the start, where the
+// plan's starting corner A moves on to the next corner instead.
+const gapRemovable = (room, w) => w.gap && [0, room.walls.length - 1].includes(room.walls.indexOf(w));
+
 async function deleteWall(room, w) {
-  const i = room.walls.indexOf(w), last = i === room.walls.length - 1;
+  const i = room.walls.indexOf(w);
   if (w.gap) {
-    if (!last && !confirm('Remove this gap? The walls after it move to join on to the wall before it.')) return false;
+    if (!gapRemovable(room, w)) {
+      alert('This gap keeps the walls after it where they are, so it stays. Put a wall back here, or split it and put a wall in part of it.');
+      return false;
+    }
+    if (i === 0 && room.walls.length > 1) {
+      // Corner A moves to where wall 2 starts: the first wall then runs the way wall 2 did, and
+      // what is placed by its distance from A shifts back by the same amount.
+      const g = geometry(room), A = g.segs[1].p0;
+      room.heading0 = normAngle(g.segs[1].heading);
+      for (const sh of room.shapes || []) {
+        if (sh.type === 'line') Object.assign(sh, { x1: +sh.x1 - A.x, y1: +sh.y1 - A.y, x2: +sh.x2 - A.x, y2: +sh.y2 - A.y });
+        else Object.assign(sh, { x: +sh.x - A.x, y: +sh.y - A.y });
+      }
+      for (const c of room.columns || []) Object.assign(c, { x: +c.x - A.x, y: +c.y - A.y });
+      for (const d of room.dims || []) Object.assign(d, { x1: +d.x1 - A.x, y1: +d.y1 - A.y, x2: +d.x2 - A.x, y2: +d.y2 - A.y });
+    }
     room.walls.splice(i, 1);
     if (selectedWall === w.id) selectedWall = null;
     return true;
@@ -950,6 +979,14 @@ $app.addEventListener('click', async e => {
       let blob;
       try { blob = await takePhoto(room?.name || ''); } catch { input.click(); break; }
       if (blob) await addPhotos([blob], photoRoom, photoWall || null, true);
+      break;
+    }
+    case 'rot90': {
+      const it = pickedItem(room), x = it?.c || it?.sh;
+      if (!x) break;
+      x.rot = normAngle((+x.rot || 0) + 90);
+      save();
+      await rerender();
       break;
     }
     case 'del-picked': {

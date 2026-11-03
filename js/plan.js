@@ -207,7 +207,23 @@ export function freeColumnShape(c) {
   if (!w || !d) return null;
   const x = +c.x || 0, y = +c.y || 0;
   if (c.shape === 'round') return { round: { c: { x, y }, r: w / 2 } };
-  return { corners: [{ x: x - w / 2, y: y - d / 2 }, { x: x + w / 2, y: y - d / 2 }, { x: x + w / 2, y: y + d / 2 }, { x: x - w / 2, y: y + d / 2 }] };
+  return { corners: boxCorners({ x, y }, w, d, +c.rot || 0) };
+}
+
+// Corners of a w × d box centred on c and turned rot degrees (clockwise on the plan), in the order
+// top-left, top-right, bottom-right, bottom-left as it stands before turning.
+export function boxCorners(c, w, d, rot = 0) {
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => turnAbout({ x: c.x + (i * w) / 2, y: c.y + (j * d) / 2 }, c, rot));
+}
+export function turnAbout(p, c, deg) {
+  if (!deg) return { ...p };
+  const r = (deg * Math.PI) / 180, cs = Math.cos(r), sn = Math.sin(r), dx = p.x - c.x, dy = p.y - c.y;
+  return { x: c.x + dx * cs - dy * sn, y: c.y + dx * sn + dy * cs };
+}
+// A drawn rectangle's corners, turned by its rotation about its centre.
+export function rectCorners(sh) {
+  const w = +sh.w || 0, h = +sh.h || 0;
+  return boxCorners({ x: (+sh.x || 0) + w / 2, y: (+sh.y || 0) + h / 2 }, w, h, +sh.rot || 0);
 }
 export const inwardFor = cw => u => (cw ? { x: -u.y, y: u.x } : { x: u.y, y: -u.x });
 
@@ -243,14 +259,15 @@ const shapeCenter = sh => mid(...shapePoints(sh));
 // Bounding box of something placed in the room — a free-standing column or a drawn rectangle /
 // circle — for measuring it off the walls. Lines have none.
 export function itemBox(it) {
+  // A turned one is measured from the box around it.
+  const around = pts => ({ x0: Math.min(...pts.map(p => p.x)), y0: Math.min(...pts.map(p => p.y)), x1: Math.max(...pts.map(p => p.x)), y1: Math.max(...pts.map(p => p.y)) });
   if (it.shape === 'rect' || it.shape === 'round') {
-    const w = +it.width || 0, d = it.shape === 'round' ? w : +it.depth || 0;
-    return { x0: (+it.x || 0) - w / 2, y0: (+it.y || 0) - d / 2, x1: (+it.x || 0) + w / 2, y1: (+it.y || 0) + d / 2 };
+    const sh = freeColumnShape(it);
+    if (!sh) return null;
+    return sh.round ? around([add(sh.round.c, { x: 1, y: 1 }, -sh.round.r), add(sh.round.c, { x: 1, y: 1 }, sh.round.r)]) : around(sh.corners);
   }
-  if (it.type === 'rect' || it.type === 'circle') {
-    const [a, b] = shapePoints(it);
-    return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
-  }
+  if (it.type === 'rect') return around(rectCorners(it));
+  if (it.type === 'circle') return around(shapePoints(it));
   return null;
 }
 
@@ -463,7 +480,8 @@ export function renderPlan(room, opt = {}) {
     out.push(`<text x="${VW - 14}" y="26" font-size="12" text-anchor="end" fill="${DIM}">${esc(opt.subtitle)}</text>`);
   }
 
-  const corners = g.closed ? g.pts.slice(0, -1) : g.pts;
+  // An open run of walls that ends back on corner A (one with a gap) doesn't letter A twice.
+  const corners = g.closed || (g.segs.length > 1 && g.gap < 1) ? g.pts.slice(0, -1) : g.pts;
   out.push(`<path d="${wallPath(g, X, g.segs, true)}" fill="#f3efe6"/>`);
 
   // Walls to scale, from the measured inside face outward by their thickness, by kind:
@@ -542,8 +560,7 @@ export function renderPlan(room, opt = {}) {
       out.push(line(a, b, `${look} stroke-linecap="round"`));
       if (tag) out.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(16))}"${tag}`));
     } else if (sh.type === 'rect') {
-      const [a, b] = shapePoints(sh).map(X);
-      out.push(`<rect x="${f(Math.min(a.x, b.x))}" y="${f(Math.min(a.y, b.y))}" width="${f(Math.abs(b.x - a.x))}" height="${f(Math.abs(b.y - a.y))}" fill="${SHAPE}" fill-opacity="0.12" ${look}${tag}/>`);
+      out.push(`<polygon points="${rectCorners(sh).map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" fill="${SHAPE}" fill-opacity="0.12" ${look}${tag}/>`);
     } else {
       const c = X({ x: +sh.x || 0, y: +sh.y || 0 });
       out.push(`<circle cx="${f(c.x)}" cy="${f(c.y)}" r="${f(Math.max(((+sh.d || 0) / 2) * s, Z(1)))}" fill="${SHAPE}" fill-opacity="0.12" ${look}${tag}/>`);

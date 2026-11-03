@@ -11,7 +11,7 @@
 // and everything else to a 5 cm grid. Two fingers still pinch-zoom (zoom.js); a second finger
 // cancels whatever one finger was doing.
 
-import { geometry, shapePoints, normAngle, freeColumnShape } from './plan.js';
+import { geometry, shapePoints, normAngle, freeColumnShape, rectCorners, turnAbout } from './plan.js';
 
 const GRID = 5, SNAP_PX = 14, ANGLE_SNAP = 7;
 const STD_TURNS = [90, -90, 45, -45, 0];
@@ -35,7 +35,7 @@ function meet(p, u, q, v) {
 // Points worth snapping to on a drawn shape.
 function keyPoints(sh) {
   const [a, b] = shapePoints(sh);
-  if (sh.type === 'rect') return [a, b, { x: a.x, y: b.y }, { x: b.x, y: a.y }];
+  if (sh.type === 'rect') return rectCorners(sh);
   if (sh.type === 'circle') return [{ x: +sh.x || 0, y: +sh.y || 0 }];
   return [a, b];
 }
@@ -354,6 +354,15 @@ export function attachPlanTools(box, ctx) {
   function dragHandle(d, p, ppcm) {
     if (d.handle.startsWith('wall-')) return reshapeWall(d, p, ppcm);
     if (d.handle.startsWith('op-')) return resizeOpening(d, p, ppcm);
+    if (d.handle === 'rot') {
+      // Turn the picked column or rectangle about its centre to face the finger; 15° steps with snap.
+      const it = (room.columns || []).find(x => x.id === d.target) || (room.shapes || []).find(x => x.id === d.target);
+      if (!it) return null;
+      const c = it.type === 'rect' ? { x: (+it.x || 0) + (+it.w || 0) / 2, y: (+it.y || 0) + (+it.h || 0) / 2 } : { x: +it.x || 0, y: +it.y || 0 };
+      const a = degOf(sub(p, c)) + 90;
+      it.rot = normAngle(ctx.snap() ? Math.round(a / 15) * 15 : a);
+      return null;
+    }
     const dm = d.handle.startsWith('dim-') && (room.dims || []).find(x => x.id === d.target);
     if (dm) {
       const s = snapPoint(p, ppcm, { skipShape: dm.id });
@@ -364,10 +373,13 @@ export function attachPlanTools(box, ctx) {
     if (!sh) return null;
     const s = snapPoint(p, ppcm, { skipShape: sh.id }), q = s.p;
     if (d.handle.startsWith('rect-')) {
-      // The opposite corner stays fixed.
-      const [a, b] = shapePoints(sh), k = +d.handle.slice(5);
-      const fixed = { x: k === 0 || k === 3 ? b.x : a.x, y: k === 0 || k === 1 ? b.y : a.y };
-      Object.assign(sh, { x: Math.min(fixed.x, q.x), y: Math.min(fixed.y, q.y), w: round1(Math.abs(q.x - fixed.x)), h: round1(Math.abs(q.y - fixed.y)) });
+      // The opposite corner stays fixed. Worked out in the rectangle's own (unturned) frame.
+      const k = +d.handle.slice(5), rot = +sh.rot || 0, w = +sh.w || 0, h = +sh.h || 0;
+      const c = { x: (+sh.x || 0) + w / 2, y: (+sh.y || 0) + h / 2 };
+      const loc = turnAbout(q, c, -rot), fixed = { x: c.x + (k === 1 || k === 2 ? -w / 2 : w / 2), y: c.y + (k >= 2 ? -h / 2 : h / 2) };
+      const nw = round1(Math.abs(loc.x - fixed.x)), nh = round1(Math.abs(loc.y - fixed.y));
+      const nc = turnAbout({ x: (loc.x + fixed.x) / 2, y: (loc.y + fixed.y) / 2 }, c, rot);
+      Object.assign(sh, { x: round1(nc.x - nw / 2), y: round1(nc.y - nh / 2), w: nw, h: nh });
     } else if (d.handle === 'circle-r') {
       sh.d = round1(2 * dist({ x: +sh.x, y: +sh.y }, q));
     } else if (d.handle === 'line-1') Object.assign(sh, { x1: q.x, y1: q.y });

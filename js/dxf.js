@@ -7,7 +7,7 @@
 // footprints fill the gap. Walls and columns carry the ceiling height as entity thickness, so
 // AutoCAD shows them in 3D straight away. Door and window symbols sit on their own -Symbol layers.
 
-import { geometry, openingShapes, openingTags, chainBreaks, columnShape, freeColumnShape, itemBox, clearances, nearestClearances, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
+import { geometry, openingShapes, openingTags, chainBreaks, columnShape, freeColumnShape, rectCorners, itemBox, clearances, nearestClearances, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
 
 const LAYERS = [
   ['Wall', 7], ['Partition', 8], ['Glass', 4], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
@@ -196,7 +196,7 @@ function drawRoom(w, room, ox, oy, unit, tDef) {
   for (const sh of room.shapes || []) {
     const [a, b] = shapePoints(sh).map(P);
     if (sh.type === 'line') w.line('Furniture', a, b);
-    else if (sh.type === 'rect') w.poly('Furniture', [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]);
+    else if (sh.type === 'rect') w.poly('Furniture', rectCorners(sh).map(P));
     else w.circle('Furniture', P({ x: +sh.x || 0, y: +sh.y || 0 }), (+sh.d || 0) * 5);
     if (sh.label) w.text('Furniture', { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, TXT, sh.label);
   }
