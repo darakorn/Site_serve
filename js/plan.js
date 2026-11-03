@@ -37,6 +37,10 @@ export const OPEN_STYLES = {
   door: { swing: 'Hinged', slide: 'Sliding', double: 'Double-acting' },
   window: { casement: 'Casement', slide: 'Sliding', awning: 'Awning', open: 'Plain opening (no sash)' },
 };
+// Which way a sliding door's leaves run: apart from the middle, or all to one side (as seen from
+// inside the room). One leaf can't part in the middle.
+export const SLIDE_WAYS = { center: 'Opens from the middle', left: 'Slides to the left', right: 'Slides to the right' };
+export const slideWay = (o, leaves) => (o.slide === 'left' || o.slide === 'right' ? o.slide : leaves > 1 ? 'center' : 'left');
 export const OPEN_STYLE_DEFAULTS = { door: { style: 'swing', leaves: 1 }, window: { style: 'slide', leaves: 2 } };
 export const MAX_LEAVES = { door: 4, window: 6 };
 
@@ -62,7 +66,8 @@ export function openingShapes(o, a, u, n, w, t, mid = 0, fw = 0) {
   const st = openStyle(o);
   if (!st) return [];
   const { style, leaves: L } = st;
-  const flip = o.type === 'door' && o.hinge === 'right';
+  const way = o.type === 'door' && style === 'slide' ? slideWay(o, L) : null;
+  const flip = o.type === 'door' && (way ? way === 'right' : o.hinge === 'right');
   const out = [];
   const ln = (p, q, dash = false) => out.push({ line: [p, q], dash });
   // A door's frame: a jamb fw wide through the wall thickness at each side; the leaves hang
@@ -91,6 +96,27 @@ export function openingShapes(o, a, u, n, w, t, mid = 0, fw = 0) {
       out.push({ arc: { c: hp, from: leaf, to: P(h + dir * lw) }, dash: true });
     }
   };
+  // Sliding door leaves with an arrow inside the room for the way each one opens. Parting from
+  // the middle, the leaves either side of it run apart, the inner ones on the track nearer the
+  // room; to one side (drawn as to the left, mirrored for right) they stack up on alternate tracks.
+  const sliding = depth => {
+    const lap = Math.min(lw * 0.08, t), head = Math.min(lw * 0.12, t * 0.8), y = Math.max(t * 0.9, head * 1.5);
+    const arrow = (from, to) => {
+      const d = Math.sign(to - from);
+      ln(P(from, y), P(to, y));
+      ln(P(to, y), P(to - d * head, y - head * 0.6));
+      ln(P(to, y), P(to - d * head, y + head * 0.6));
+    };
+    for (let i = 0; i < L; i++) {
+      const toLeft = way !== 'center' || i < L / 2;
+      // Middle: count out from the centre; one side: from the end the leaves gather at.
+      const rank = way === 'center' ? (toLeft ? Math.floor(L / 2) - 1 - i : i - Math.ceil(L / 2)) : i;
+      const k = L === 1 || (way === 'center' && L === 2) ? 0 : (rank % 2 ? -1 : 1) * depth;
+      ln(P(Math.max(0, i * lw - lap), mid + k), P(Math.min(w, (i + 1) * lw + lap), mid + k));
+      const c = (i + 0.5) * lw;
+      arrow(toLeft ? c + lw * 0.25 : c - lw * 0.25, toLeft ? c - lw * 0.25 : c + lw * 0.25);
+    }
+  };
   const panels = depth => {
     const lap = Math.min(lw * 0.08, t);
     for (let i = 0; i < L; i++) {
@@ -102,7 +128,7 @@ export function openingShapes(o, a, u, n, w, t, mid = 0, fw = 0) {
   if (o.type === 'door') {
     if (style === 'swing') swing(o.swing === 'out' ? -1 : 1, false);
     else if (style === 'double') { swing(1, false); swing(-1, true); }
-    else panels(t / 4);
+    else sliding(t / 4);
     return out;
   }
 
@@ -172,6 +198,14 @@ export function columnShape(sg, c) {
   const p = add(base, n, Math.max(0, +c.gap || 0));
   if (c.shape === 'round') return { round: { c: add(add(p, t, w / 2), n, w / 2), r: w / 2 } };
   return { corners: [p, add(p, t, w), add(add(p, t, w), n, d), add(p, n, d)] };
+}
+// A free-standing column (room.columns): x, y is its centre in plan cm from corner A, axis-aligned.
+export function freeColumnShape(c) {
+  const w = Math.max(0, +c.width || 0), d = c.shape === 'round' ? w : Math.max(0, +c.depth || 0);
+  if (!w || !d) return null;
+  const x = +c.x || 0, y = +c.y || 0;
+  if (c.shape === 'round') return { round: { c: { x, y }, r: w / 2 } };
+  return { corners: [{ x: x - w / 2, y: y - d / 2 }, { x: x + w / 2, y: y - d / 2 }, { x: x + w / 2, y: y + d / 2 }, { x: x - w / 2, y: y + d / 2 }] };
 }
 export const inwardFor = cw => u => (cw ? { x: -u.y, y: u.x } : { x: u.y, y: -u.x });
 
@@ -352,7 +386,7 @@ export function renderPlan(room, opt = {}) {
   const head = opt.export ? 46 : 0;
   const pad = mini ? 10 : 56;
   const maxH = mini ? 280 : 440;
-  const fit = [...g.extent, ...(g.segs.length ? [] : [{ x: -50, y: -50 }, { x: 400, y: 300 }]), ...(room.shapes || []).flatMap(shapePoints)];
+  const fit = [...g.extent, ...(g.segs.length ? [] : [{ x: -50, y: -50 }, { x: 400, y: 300 }]), ...(room.shapes || []).flatMap(shapePoints), ...(room.columns || []).map(c => ({ x: +c.x || 0, y: +c.y || 0 }))];
   const xs = fit.map(p => p.x), ys = fit.map(p => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   const bw = Math.max(Math.max(...xs) - minX, 1), bh = Math.max(Math.max(...ys) - minY, 1);
@@ -424,7 +458,8 @@ export function renderPlan(room, opt = {}) {
       out.push(line(a, add(a, o2, tw), jamb), line(b, add(b, o2, tw), jamb));
       // The picked one is marked along its span: a plain opening has no tag to light up.
       if (!mini && o.id === opt.selectedOp) out.push(line(a, b, `stroke="${ACC}" stroke-width="${f(Z(4))}" stroke-opacity="0.6"`));
-      if (tags.has(o.id)) tagSpots.push({ p: add(mid(a, b), n, Z(o.type === 'door' ? 12 : 10)), tag: tags.get(o.id), sel: o.id === opt.selectedOp });
+      // A sliding door's arrows sit just inside the wall, so its tag moves further in.
+      if (tags.has(o.id)) tagSpots.push({ p: add(mid(a, b), n, Z(o.type === 'door' ? (openStyle(o)?.style === 'slide' ? 26 : 12) : 10)), tag: tags.get(o.id), sel: o.id === opt.selectedOp });
       if (!mini && !opt.export) hits.push(line(a, b, `stroke="#000" stroke-opacity="0" stroke-width="${f(Z(22))}" data-wall="${sg.wall.id}" data-op="${o.id}" style="cursor:pointer"`));
       if (o.type === 'door' || o.type === 'window') {
         const solid = Z(o.type === 'door' ? (mini ? 1 : 1.6) : 1);
@@ -463,16 +498,18 @@ export function renderPlan(room, opt = {}) {
     if (sh.label && !mini) shapeLabels.push({ p: X(shapeCenter(sh)), label: sh.label, on });
   }
 
-  // Columns
-  for (const sg of g.segs) {
-    for (const c of sg.wall.columns || []) {
-      const sh = columnShape(sg, c);
-      if (!sh) continue;
-      const tag = !mini && !opt.export ? ` data-wall="${sg.wall.id}" data-col="${c.id}" style="cursor:pointer"` : '';
-      const look = `fill="#555" stroke="${INK}" stroke-width="${f(Z(1))}"${tag}`;
-      if (sh.round) { const q = X(sh.round.c); out.push(`<circle cx="${f(q.x)}" cy="${f(q.y)}" r="${f(Math.max(sh.round.r * s, Z(1.5)))}" ${look}/>`); }
-      else out.push(`<polygon points="${sh.corners.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" ${look}/>`);
-    }
+  // Columns: on a wall, and free-standing ones anywhere in the plan
+  const allCols = [
+    ...g.segs.flatMap(sg => (sg.wall.columns || []).map(c => ({ c, sh: columnShape(sg, c), tag: `data-wall="${sg.wall.id}" data-col="${c.id}"` }))),
+    ...(room.columns || []).map(c => ({ c, sh: freeColumnShape(c), tag: `data-fcol="${c.id}"` })),
+  ];
+  for (const { c, sh, tag: at } of allCols) {
+    if (!sh) continue;
+    const on = !mini && c.id === opt.selectedOp;
+    const tag = !mini && !opt.export ? ` ${at} style="cursor:pointer"` : '';
+    const look = `fill="${on ? ACC : '#555'}" stroke="${on ? ACC : INK}" stroke-width="${f(Z(1))}"${tag}`;
+    if (sh.round) { const q = X(sh.round.c); out.push(`<circle cx="${f(q.x)}" cy="${f(q.y)}" r="${f(Math.max(sh.round.r * s, Z(1.5)))}" ${look}/>`); }
+    else out.push(`<polygon points="${sh.corners.map(p => { const v = X(p); return `${f(v.x)},${f(v.y)}`; }).join(' ')}" ${look}/>`);
   }
 
   if (!mini) {

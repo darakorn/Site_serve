@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { geometry, segPoint, WALL_KINDS, WALL_T, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, shapePoints } from './plan.js';
+import { geometry, segPoint, WALL_KINDS, WALL_T, renderPlan, svgToPng, fmtM, fmtArea, fmtLen, UNITS, unitOf, toUnit, fromUnit, cornerName, normAngle, OPEN_STYLES, OPEN_STYLE_DEFAULTS, SLIDE_WAYS, slideWay, MAX_LEAVES, openStyle, openingTags, SHAPE_TYPES, shapePoints } from './plan.js';
 import { openAnnotator, renderAnnotated, compressImage } from './annotate.js';
 import { plansToDxf } from './dxf.js';
 import { newZoom, applyZoom, attachZoom } from './zoom.js';
@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.21';
+const APP_VERSION = '1.0.22';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -27,7 +27,7 @@ let photos = new Map();   // photo id → record for P
 let view = { name: 'home' };
 let selectedWall = null;
 let selectedOp = null;    // door/window/column/shape picked in the plan, highlighted in the form
-let planTool = null;      // 'edit' | 'wall' | 'light' | 'glass' | 'line' | 'rect' | 'circle' while working on the plan
+let planTool = null;      // 'edit' | 'wall' | 'light' | 'glass' | 'column' | 'line' | 'rect' | 'circle' while working on the plan
 let preview = {};         // { draft, draftWall, snapAt } shown while a plan drag is under way
 let snapOn = true;
 try { snapOn = localStorage.getItem('plan-snap') !== '0'; } catch { /* storage unavailable */ }
@@ -289,6 +289,7 @@ function kindRow(o, at, autoTag) {
     <select data-f="op.style" ${at} aria-label="Type">${Object.entries(OPEN_STYLES[o.type]).map(([k, l]) => opt(k, l, k === st.style)).join('')}</select>
     ${st.style === 'open' ? '' : `<select data-f="op.leaves" ${at} aria-label="Leaves">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} leaf${i ? 's' : ''}`, i + 1 === st.leaves)).join('')}</select>`}
     ${o.type === 'door' && st.style === 'swing' ? `<select data-f="op.swing" ${at} aria-label="Opens">${opt('in', 'Opens in', o.swing !== 'out')}${opt('out', 'Opens out', o.swing === 'out')}</select>` : ''}
+    ${o.type === 'door' && st.style === 'slide' ? `<select data-f="op.slide" ${at} aria-label="Opens">${Object.entries(SLIDE_WAYS).filter(([k]) => k !== 'center' || st.leaves > 1).map(([k, l]) => opt(k, l, k === slideWay(o, st.leaves))).join('')}</select>` : ''}
     ${o.type === 'door' && st.style !== 'slide' ? `<select data-f="op.hinge" ${at} aria-label="Hinge side">${opt('left', 'Hinge left', o.hinge !== 'right')}${opt('right', 'Hinge right', o.hinge === 'right')}</select>` : ''}
   </div>`;
 }
@@ -444,8 +445,8 @@ const SHAPE_FIELDS = {
 function shapesCard(room) {
   const list = room.shapes || [];
   return `<section class="card shapes">
-    <h3>Items on the plan <small>counters, cabinets, built-ins…</small></h3>
-    ${list.length ? '<p class="hint">x, y are measured from corner A — right is +x, down is +y</p>' : '<p class="hint">Tap "✏️ Edit / draw on plan" below the plan and drag, or add one below and type its size.</p>'}
+    <h3>Items on the plan <small>counters, cabinets, built-ins, free-standing columns…</small></h3>
+    ${list.length || room.columns?.length ? '<p class="hint">x, y are measured from corner A — right is +x, down is +y</p>' : '<p class="hint">Tap "✏️ Edit / draw on plan" below the plan and drag, or add one below and type its size.</p>'}
     ${list.map(sh => {
       const at = `data-s="${sh.id}"`;
       return `<div class="op shape${selectedOp === sh.id ? ' picked' : ''}" id="op-${sh.id}">
@@ -454,7 +455,21 @@ function shapesCard(room) {
         <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}</div>
       </div>`;
     }).join('')}
-    <div class="btns">${Object.entries(SHAPE_TYPES).map(([k, l]) => `<button class="btn sm" data-act="add-shape" data-type="${k}">+ ${l}</button>`).join('')}</div>
+    ${(room.columns || []).map(c => {
+      const at = `data-fc="${c.id}"`, round = c.shape === 'round';
+      return `<div class="op col${selectedOp === c.id ? ' picked' : ''}" id="op-${c.id}">
+        <select data-f="fcol.shape" ${at} aria-label="Column shape"><option value="rect"${round ? '' : ' selected'}>Free-standing square column</option><option value="round"${round ? ' selected' : ''}>Free-standing round column</option></select>
+        <button class="icon" data-act="del-fcol" ${at} aria-label="Delete column">✕</button>
+        <div class="col-f">
+          ${lenField('Centre x', 'fcol.x', c.x, `${at} inputmode="text"`)}
+          ${lenField('Centre y', 'fcol.y', c.y, `${at} inputmode="text"`)}
+          ${lenField(round ? 'Diameter' : 'Width (x)', 'fcol.width', c.width, at)}
+          ${round ? '' : lenField('Depth (y)', 'fcol.depth', c.depth, at)}
+        </div>
+      </div>`;
+    }).join('')}
+    <div class="btns">${Object.entries(SHAPE_TYPES).map(([k, l]) => `<button class="btn sm" data-act="add-shape" data-type="${k}">+ ${l}</button>`).join('')}
+      <button class="btn sm" data-act="add-fcol">+ Column</button></div>
   </section>`;
 }
 
@@ -481,7 +496,7 @@ function handlesFor(room) {
     return out;
   }
   const sg = g.segs.find(x => x.wall.id === selectedWall);
-  if (sg && !sh && !(selectedOp && room.walls.some(w => (w.columns || []).some(c => c.id === selectedOp)))) {
+  if (sg && !selectedOp) {
     const m = sg.arc ? sg.arc.apex : { x: (sg.p0.x + sg.p1.x) / 2, y: (sg.p0.y + sg.p1.y) / 2 };
     out.push({ ...sg.p0, id: 'wall-start', for: sg.wall.id }, { ...sg.p1, id: 'wall-end', for: sg.wall.id }, { ...m, id: 'wall-move', for: sg.wall.id, solid: true });
   }
@@ -499,6 +514,8 @@ function pickedItem(room) {
   }
   const sh = room.shapes?.find(x => x.id === selectedOp);
   if (sh) return { kind: 'shape', sh, name: shapeName(sh) };
+  const fc = room.columns?.find(x => x.id === selectedOp);
+  if (fc) return { kind: 'fcol', c: fc, name: 'Column' };
   const i = planTool ? room.walls.findIndex(x => x.id === selectedWall) : -1;
   if (i >= 0) return { kind: 'wall', w: room.walls[i], name: room.walls[i].gap ? `Gap (wall ${i + 1})` : `Wall ${i + 1}` };
   return null;
@@ -515,6 +532,7 @@ function pickQuick(room) {
     <b>${esc(it.name)}</b>
     ${st && st.style !== 'slide' ? `<button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>` : ''}
     ${st && st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
+    ${st && st.style === 'slide' ? `<button class="btn sm" data-act="door-slide" ${at}>⇄ ${SLIDE_WAYS[slideWay(o, st.leaves)]}</button>` : ''}
     ${it.kind === 'wall' && it.w.gap ? `<button class="btn sm" data-act="fill-gap" data-w="${it.w.id}">↺ Put a wall here</button>` : ''}
     ${it.kind === 'wall' && !it.w.gap ? Object.entries(KIND_BUTTONS).map(([k, l]) => `<button class="btn sm${(it.w.kind || '') === k ? ' on' : ''}" data-act="wall-kind" data-kind="${k}" data-w="${it.w.id}">${l}</button>`).join('') : ''}
     <button class="btn sm danger" data-act="del-picked">🗑 ${it.kind === 'wall' && it.w.gap ? 'Remove gap' : 'Delete'}</button>
@@ -523,7 +541,7 @@ function pickQuick(room) {
 }
 
 const KIND_BUTTONS = { '': '🧱 Masonry', light: '▯ Light', glass: '🪟 Glass' };
-const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', light: '▯ Light wall', glass: '🪟 Glass wall', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
+const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', light: '▯ Light wall', glass: '🪟 Glass wall', column: '▪ Column', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
 
 function drawBar() {
   const room = curRoom(), quick = room ? pickQuick(room) : '';
@@ -538,6 +556,7 @@ function drawBar() {
       wall: 'Tap or drag to where the wall ends; it continues from the last wall · finish at corner A to close the room',
       light: 'Like 🧱 Wall, but the new wall is a light wall (drywall) · switch any wall later: tap it in ✋ Move / resize',
       glass: 'Like 🧱 Wall, but the new wall is glass · switch any wall later: tap it in ✋ Move / resize',
+      column: 'Tap where a free-standing column goes · drag it, or type its size, afterwards',
     }[planTool] || 'Drag on the plan to draw'}</small>`;
 }
 
@@ -593,9 +612,14 @@ function viewRoom() {
 
 function fmtOpening(o, wallIndex) {
   const st = openStyle(o);
-  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ×${st.leaves}` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' opens out' : ''}${o.type === 'door' && st.style !== 'slide' && o.hinge === 'right' ? ' hinge right' : ''}` : '';
+  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ×${st.leaves}` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' opens out' : ''}${o.type === 'door' && st.style !== 'slide' && o.hinge === 'right' ? ' hinge right' : ''}${o.type === 'door' && st.style === 'slide' ? `, ${SLIDE_WAYS[slideWay(o, st.leaves)].toLowerCase()}` : ''}` : '';
   const tag = openingTags(curRoomOf(o)).get(o.id);
   return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (from corner ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)}${o.type === 'window' && o.sill !== undefined && o.sill !== '' ? `, sill ${fmtLen(o.sill, P.unit)}` : ''})`;
+}
+
+function fmtFreeColumn(c) {
+  const u = P.unit;
+  return `${c.shape === 'round' ? `Free-standing round column Ø${fmtLen(c.width, u)}` : `Free-standing column ${fmtLen(c.width, u)}×${fmtLen(c.depth, u)}`} ${unitLabel()} (centre ${fmtLen(c.x, u)}, ${fmtLen(c.y, u)} from corner A)`;
 }
 
 // Room holding an opening, for its tag in the report (which lists every room).
@@ -617,6 +641,7 @@ function roomReport(r) {
     ${r.shapes?.length ? `<p>Items: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
     <table class="r-table"><thead><tr><th>Wall</th><th>Length (${unitLabel()})</th><th>Doors / windows / columns</th><th>Notes</th></tr></thead><tbody>
+      ${(r.columns || []).length ? `<tr><td>–</td><td>–</td><td>${r.columns.map(fmtFreeColumn).join('<br>')}</td><td></td></tr>` : ''}
       ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${w.gap ? '<br><small>gap (wall deleted)</small>' : ''}${!w.gap && w.kind ? `<br><small>${WALL_KINDS[w.kind]?.toLowerCase() || ''}</small>` : ''}${!w.gap && +w.thickness > 0 ? `<br><small>${fmtLen(w.thickness, P.unit)} thick</small>` : ''}${w.gap ? '' : +w.bulge ? `<br><small>bulge ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
     </tbody></table>
     ${list.length ? `<div class="r-photos">${list.map(p => `<figure><img data-img="${p.id}" data-size="1100" alt=""><figcaption>${esc(photoLabel(r, p))}</figcaption></figure>`).join('')}</div>` : ''}
@@ -848,6 +873,13 @@ $app.addEventListener('click', async e => {
       document.getElementById('op-' + selectedOp)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
+    const fc = e.target.closest('[data-fcol]');
+    if (fc && (!planTool || planTool === 'edit')) {
+      selectedOp = fc.dataset.fcol;
+      await rerender();
+      if (!planTool) document.getElementById('op-' + selectedOp)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     const hit = e.target.closest('[data-wall]');
     // While editing on the plan, picking something keeps the page where it is.
     if (hit) selectWall(hit.dataset.wall, !planTool, hit.dataset.op || hit.dataset.col || null);
@@ -922,6 +954,7 @@ $app.addEventListener('click', async e => {
         it.w.openings = it.w.openings.filter(x => x !== it.o);
         resolveRefs(it.w);
       } else if (it.kind === 'col') it.w.columns = it.w.columns.filter(x => x !== it.c);
+      else if (it.kind === 'fcol') room.columns = room.columns.filter(x => x !== it.c);
       else room.shapes = room.shapes.filter(x => x !== it.sh);
       selectedOp = null;
       save();
@@ -955,15 +988,21 @@ $app.addEventListener('click', async e => {
         for (const c of w.columns || []) c.id = fresh(c.id);
       }
       for (const sh of copy.shapes || []) sh.id = fresh(sh.id);
+      for (const c of copy.columns || []) c.id = fresh(c.id);
       P.rooms.splice(P.rooms.indexOf(room) + 1, 0, copy);
       save();
       location.hash = `#/p/${P.id}/r/${copy.id}`;
       break;
     }
     case 'door-hinge':
-    case 'door-swing': {
+    case 'door-swing':
+    case 'door-slide': {
       const o = w.openings.find(x => x.id === t.dataset.o);
-      if (t.dataset.act === 'door-hinge') o.hinge = o.hinge === 'right' ? 'left' : 'right';
+      if (t.dataset.act === 'door-slide') {
+        // Middle → left → right, skipping the middle for a single leaf.
+        const ways = Object.keys(SLIDE_WAYS).filter(k => k !== 'center' || openStyle(o).leaves > 1);
+        o.slide = ways[(ways.indexOf(slideWay(o, openStyle(o).leaves)) + 1) % ways.length];
+      } else if (t.dataset.act === 'door-hinge') o.hinge = o.hinge === 'right' ? 'left' : 'right';
       else o.swing = o.swing === 'out' ? 'in' : 'out';
       save();
       await rerender();
@@ -992,6 +1031,20 @@ $app.addEventListener('click', async e => {
       document.getElementById('op-' + selectedOp)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       break;
     }
+    case 'add-fcol': {
+      // In the middle of the room, then dragged or typed into place.
+      const g = geometry(room), xs = g.extent.map(p => p.x), ys = g.extent.map(p => p.y);
+      (room.columns ||= []).push({ id: uid(), shape: 'rect', width: 20, depth: 20, x: snap((Math.min(...xs) + Math.max(...xs)) / 2), y: snap((Math.min(...ys) + Math.max(...ys)) / 2) });
+      selectedOp = room.columns.at(-1).id;
+      save();
+      await rerender();
+      break;
+    }
+    case 'del-fcol':
+      room.columns = (room.columns || []).filter(x => x.id !== t.dataset.fc);
+      save();
+      rerender();
+      break;
     case 'del-shape':
       room.shapes = (room.shapes || []).filter(x => x.id !== t.dataset.s);
       save();
@@ -1066,7 +1119,7 @@ $app.addEventListener('input', e => {
   const [scope, prop] = key.split('.');
   const room = curRoom();
   const w = room?.walls.find(x => x.id === el.dataset.w);
-  const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c), shape: room?.shapes?.find(x => x.id === el.dataset.s) }[scope];
+  const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c), shape: room?.shapes?.find(x => x.id === el.dataset.s), fcol: room?.columns?.find(x => x.id === el.dataset.fc) }[scope];
   if (!target) return;
   const v = parseFloat(el.value);
   if (scope === 'wall' && prop === 'radius') {
@@ -1091,9 +1144,9 @@ $app.addEventListener('input', e => {
     const r = el.closest('.wall')?.querySelector('[data-f="wall.radius"]');
     if (r) r.value = radiusOf(w) === '' ? '' : toUnit(roundLen(radiusOf(w)), P.unit);
   }
-  save(`${key}:${el.dataset.w || ''}:${el.dataset.o || el.dataset.c || el.dataset.s || ''}`);
+  save(`${key}:${el.dataset.w || ''}:${el.dataset.o || el.dataset.c || el.dataset.s || el.dataset.fc || ''}`);
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
-  if ((scope === 'wall' && prop === 'kind') || (scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();
+  if ((scope === 'wall' && prop === 'kind') || (scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || ((scope === 'col' || scope === 'fcol') && prop === 'shape') || (scope === 'op' && prop === 'leaves') || (scope === 'project' && prop === 'unit')) rerender();
   else if (view.name === 'room') refreshPlan();
 });
 

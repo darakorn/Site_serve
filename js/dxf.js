@@ -7,7 +7,7 @@
 // footprints fill the gap. Walls and columns carry the ceiling height as entity thickness, so
 // AutoCAD shows them in 3D straight away. Door and window symbols sit on their own -Symbol layers.
 
-import { geometry, openingShapes, openingTags, chainBreaks, columnShape, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
+import { geometry, openingShapes, openingTags, chainBreaks, columnShape, freeColumnShape, segPoint, shapePoints, fmtLen, fmtArea, wallT, outerCorner, DOOR_FRAME } from './plan.js';
 
 const LAYERS = [
   ['Wall', 7], ['Partition', 8], ['Glass', 4], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
@@ -168,6 +168,12 @@ function drawRoom(w, room, ox, oy, unit, tDef) {
       if (sh?.round) w.circle('Column', P(sh.round.c), sh.round.r * 10, height);
       else if (sh) w.poly('Column', sh.corners.map(P), height);
     }
+  }
+
+  for (const c of room.columns || []) {
+    const sh = freeColumnShape(c);
+    if (sh?.round) w.circle('Column', P(sh.round.c), sh.round.r * 10, height);
+    else if (sh) w.poly('Column', sh.corners.map(P), height);
   }
 
   // Shapes drawn into the plan (counters, built-ins…)

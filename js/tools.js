@@ -4,6 +4,7 @@
 //           The walls next to it keep their direction and follow, so a closed room stays closed.
 //   wall  — tap or drag to add a wall from where the last one ends (light / glass: the same, as
 //           a light wall or a glass wall).
+//   column — tap to drop a free-standing column (drag it later in edit).
 //   line / rect / circle — drag out a shape.
 // With snap on, points stick to room corners, shape points and walls nearby, angles to 45° steps
 // and everything else to a 5 cm grid. Two fingers still pinch-zoom (zoom.js); a second finger
@@ -119,6 +120,7 @@ export function attachPlanTools(box, ctx) {
   function begin(e) {
     const tool = ctx.tool(), { p, ppcm } = frame(e), el = e.target;
     if (tool === 'wall' || tool === 'light' || tool === 'glass') return { kind: 'wall', wallKind: tool === 'wall' ? null : tool };
+    if (tool === 'column') return { kind: 'col-new' };
     if (tool === 'line' || tool === 'rect' || tool === 'circle') return { kind: 'shape-new', a: snapPoint(p, ppcm).p };
     if (tool !== 'edit') return null;
 
@@ -137,6 +139,11 @@ export function attachPlanTools(box, ctx) {
     if (opEl) {
       const sg = segOf(opEl.dataset.wall), o = sg?.wall.openings.find(x => x.id === opEl.dataset.op);
       if (o) return { kind: 'op-move', sg, o, grab: dot(sub(p, sg.p0), sg.u) - (+o.offset || 0) };
+    }
+    const fcolEl = el.closest?.('[data-fcol]');
+    if (fcolEl) {
+      const c = (room.columns || []).find(x => x.id === fcolEl.dataset.fcol);
+      if (c) return { kind: 'fcol-move', c, grab: sub(p, { x: +c.x || 0, y: +c.y || 0 }) };
     }
     const colEl = el.closest?.('[data-col]');
     if (colEl) {
@@ -161,6 +168,12 @@ export function attachPlanTools(box, ctx) {
       d.result = { from, heading, len };
       snapAt = s.at;
       show({ draftWall: { a: from, b: add(from, dirOf(heading), len), len }, snapAt });
+      return;
+    }
+    if (d.kind === 'col-new') {
+      const s = snapPoint(p, ppcm);
+      d.result = s.p;
+      show({ snapAt: s.p });
       return;
     }
     if (d.kind === 'shape-new') {
@@ -194,6 +207,10 @@ export function attachPlanTools(box, ctx) {
         o.refGap = Math.max(0, round1(off - (+r.offset || 0) - (+r.width || 0)));
       } else o.offset = off;
       ctx.resolveRefs(sg.wall);
+    } else if (d.kind === 'fcol-move') {
+      const s = snapPoint(sub(p, d.grab), ppcm);
+      Object.assign(d.c, s.p);
+      snapAt = s.at;
     } else if (d.kind === 'col-move') {
       const { sg, c } = d, w = +c.width || 0;
       c.offset = clamp(snapAlong(dot(sub(p, sg.p0), sg.u) - d.grabU, [0, sg.len - w], ppcm), 0, Math.max(0, sg.len - w));
@@ -215,6 +232,7 @@ export function attachPlanTools(box, ctx) {
       walls: room.walls.map(w => ({ turn: w.turn, customTurn: w.customTurn, ops: w.openings.map(o => o.offset), cols: (w.columns || []).map(c => c.offset) })),
       heading0: room.heading0,
       shapes: JSON.parse(JSON.stringify(room.shapes || [])),
+      columns: JSON.parse(JSON.stringify(room.columns || [])),
     };
   }
 
@@ -226,6 +244,7 @@ export function attachPlanTools(box, ctx) {
     const o = d.orig, { n, closed } = o, i = room.walls.findIndex(w => w.id === d.target);
     if (i < 0) return null;
     room.shapes = JSON.parse(JSON.stringify(o.shapes));
+    if (room.columns) room.columns = JSON.parse(JSON.stringify(o.columns));
     const k = c => (closed ? ((c % n) + n) % n : c); // corner index (a closed room wraps round)
     const has = w => closed || (w >= 0 && w < n);      // is there a wall with this index?
     const seg = w => o.segs[k(w)];
@@ -280,7 +299,8 @@ export function attachPlanTools(box, ctx) {
       ctx.resolveRefs(w);
     });
 
-    // Corner A is where the plan starts from: if it moved, move the drawn shapes back so they stay
+    // Corner A is where the plan starts from: if it moved, move the drawn shapes and free-standing
+    // columns back so they stay
     // put, and shift the view so the plan doesn't jump under the finger.
     const A = P[0];
     d.shift = Math.hypot(A.x, A.y) > 1e-9 ? A : null;
@@ -288,6 +308,7 @@ export function attachPlanTools(box, ctx) {
       if (sh.type === 'line') Object.assign(sh, { x1: round1(+sh.x1 - A.x), y1: round1(+sh.y1 - A.y), x2: round1(+sh.x2 - A.x), y2: round1(+sh.y2 - A.y) });
       else Object.assign(sh, { x: round1(+sh.x - A.x), y: round1(+sh.y - A.y) });
     }
+    for (const c of room.columns || []) Object.assign(c, { x: round1(+c.x - A.x), y: round1(+c.y - A.y) });
     const f0 = d.frame0 ||= d.frame;
     d.frame = { ...f0, ox: f0.ox + A.x * f0.s, oy: f0.oy + A.y * f0.s };
     return snapAt;
@@ -349,6 +370,10 @@ export function attachPlanTools(box, ctx) {
       room.walls.push(nw);
       return ctx.done(nw.id, 'wall');
     }
+    if (d.kind === 'col-new' && d.result) {
+      (room.columns ||= []).push({ id: ctx.uid(), shape: 'rect', width: 20, depth: 20, ...d.result });
+      return ctx.done(room.columns.at(-1).id, 'col');
+    }
     if (d.kind === 'shape-new' && d.result) {
       const r = d.result, size = Math.max(+r.w || 0, +r.h || 0, +r.d || 0, r.type === 'line' ? Math.hypot(r.x2 - r.x1, r.y2 - r.y1) : 0);
       if (size >= GRID) {
@@ -364,7 +389,7 @@ export function attachPlanTools(box, ctx) {
     if (!ctx.tool()) return;
     if (drag) { drag = null; ctx.preview({}); return; } // second finger: it's a pinch
     drag = begin(e);
-    if (drag) { drag.pointer = e.pointerId; drag.frame = pin(); if (drag.kind === 'wall' || drag.kind === 'shape-new') move(e); }
+    if (drag) { drag.pointer = e.pointerId; drag.frame = pin(); if (drag.kind === 'wall' || drag.kind === 'shape-new' || drag.kind === 'col-new') move(e); }
   });
   box.addEventListener('pointermove', e => { if (drag && e.pointerId === drag.pointer) move(e); });
   box.addEventListener('pointerup', e => { if (drag && e.pointerId === drag.pointer) finish(); });
