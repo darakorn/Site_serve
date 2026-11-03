@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.29';
+const APP_VERSION = '1.0.30';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -130,13 +130,15 @@ async function route() {
       view = { name: 'room', roomId: rid };
       trackRoom(); // starts a fresh history when the room changes
     } else {
-      view = { name: b === 'report' ? 'report' : 'project' };
+      // #/p/<id>/report is every room; #/p/<id>/report/<room> just that one.
+      view = b === 'report' ? { name: 'report', roomId: P.rooms.some(r => r.id === rid) ? rid : null } : { name: 'project' };
     }
   }
   await render();
   scrollTo(0, 0);
 }
 function render() {
+  if (view.name !== 'report') document.title = 'Site Survey';
   if (view.name !== 'room') { planTool = null; document.body.classList.remove('plan-full'); }
   return { home: viewHome, project: viewProject, room: viewRoom, report: viewReport }[view.name]();
 }
@@ -204,7 +206,7 @@ async function viewHome() {
     ${list.length
       ? list.map(p => `<a class="card link" href="#/p/${p.id}"><b>${esc(p.name || 'Untitled')}</b><small>${[p.site, `${p.rooms.length} room${p.rooms.length === 1 ? '' : 's'}`, p.date].filter(Boolean).map(esc).join(' · ')}</small></a>`).join('')
       : '<p class="empty">No projects yet. Tap the button above to start a survey.</p>'}
-    <label class="btn ghost block">Import backup (.siteserve)<input type="file" data-import hidden></label>
+    <label class="btn ghost block">📂 Open project (.siteserve)<input type="file" data-import hidden></label>
     <p class="hint version">Version ${APP_VERSION}</p>
   </main>`;
 }
@@ -245,8 +247,21 @@ function viewProject() {
     <h2>Export</h2>
     <a class="btn block" href="#/p/${P.id}/report">📄 Report: plans + photos (print / PDF)</a>
     <button class="btn block" data-act="export-dxf-all">📐 All plans as DXF (CAD)</button>
+    ${P.rooms.length ? `<section class="card room-exports">
+      <h3>Each room on its own</h3>
+      ${P.rooms.map(r => `<div class="room-export"><b>${esc(r.name)}</b>
+        <a class="btn sm" href="#/p/${P.id}/report/${r.id}">📄 Print</a>
+        <button class="btn sm" data-act="room-png" data-r="${r.id}">PNG</button>
+        <button class="btn sm" data-act="room-dxf" data-r="${r.id}">DXF</button></div>`).join('')}
+    </section>` : ''}
     <button class="btn block" data-act="upload">☁️ Upload to server (DATA)</button>
-    <button class="btn block" data-act="backup">💾 Back up project to a file</button>
+    <h2>Project file</h2>
+    <div class="btns file-btns">
+      <button class="btn" data-act="backup">💾 Save</button>
+      <button class="btn" data-act="save-as">💾 Save as…</button>
+      <label class="btn ghost">📂 Open…<input type="file" data-import hidden></label>
+    </div>
+    <p class="hint">Saves the whole project with its photos as a .siteserve file; Open brings one back, on this phone or another.</p>
     <button class="btn ghost danger block" data-act="delete-project">Delete project</button>
   </main>`;
 }
@@ -622,7 +637,7 @@ function drawBar() {
 
 function viewRoom() {
   const room = curRoom();
-  $app.innerHTML = `${bar(`#/p/${P.id}`, room.name, '<button class="btn sm" data-act="export-png">PNG</button><button class="btn sm" data-act="export-dxf">DXF</button>')}
+  $app.innerHTML = `${bar(`#/p/${P.id}`, room.name, `<a class="btn sm" href="#/p/${P.id}/report/${room.id}">Print</a><button class="btn sm" data-act="export-png">PNG</button><button class="btn sm" data-act="export-dxf">DXF</button>`)}
   <main>
     <section class="plan-wrap${planTool ? ' full' : ''}">
       <div class="plan-box">
@@ -709,15 +724,18 @@ function roomReport(r) {
 }
 
 function viewReport() {
-  const total = P.rooms.reduce((s, r) => { const g = geometry(r); return s + (g.closed ? g.area : 0); }, 0);
-  const meta = [['Client', P.client], ['Site', P.site], ['Survey date', P.date], ['Surveyor', P.surveyor], ['Rooms', P.rooms.length], ['Total floor area', fmtArea(total)]]
+  const one = view.roomId && P.rooms.find(r => r.id === view.roomId), rooms = one ? [one] : P.rooms;
+  const total = rooms.reduce((s, r) => { const g = geometry(r); return s + (g.closed ? g.area : 0); }, 0);
+  const meta = [['Client', P.client], ['Site', P.site], ['Survey date', P.date], ['Surveyor', P.surveyor], ...(one ? [] : [['Rooms', P.rooms.length]]), [one ? 'Floor area' : 'Total floor area', fmtArea(total)]]
     .filter(([, v]) => v !== '' && v != null);
-  $app.innerHTML = `${bar(`#/p/${P.id}`, 'Report', '<button class="btn sm" data-act="print">Print / PDF</button>')}
-  <main class="report">
+  // The print's file name (Save as PDF) comes from the page title.
+  document.title = [P.name, one?.name].filter(Boolean).join(' - ') || 'Site Survey';
+  $app.innerHTML = `${bar(one ? `#/p/${P.id}/r/${one.id}` : `#/p/${P.id}`, one ? `Report · ${one.name}` : 'Report', '<button class="btn sm" data-act="print">Print / PDF</button>')}
+  <main class="report${one ? ' one-room' : ''}">
     <h1 class="r-title">${esc(P.name)}</h1>
     <dl class="r-meta">${meta.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
-    ${P.note ? `<p>${esc(P.note)}</p>` : ''}
-    ${P.rooms.map(roomReport).join('') || '<p class="empty">No rooms yet</p>'}
+    ${P.note && !one ? `<p>${esc(P.note)}</p>` : ''}
+    ${rooms.map(roomReport).join('') || '<p class="empty">No rooms yet</p>'}
   </main>`;
   return hydrateImages();
 }
@@ -927,6 +945,24 @@ async function backup() {
   await shareOrDownload(await backupBlob(), `${fileSafe(P.name)}.siteserve`);
 }
 
+// Save under a name of your choosing, always ending .siteserve. Where the browser can (desktop
+// Chrome / Edge) its own save dialog picks the folder too.
+async function saveAs() {
+  const blob = await backupBlob(), suggested = `${fileSafe(P.name)}.siteserve`;
+  if (window.showSaveFilePicker) {
+    try {
+      const h = await showSaveFilePicker({ suggestedName: suggested, types: [{ description: 'Site Survey project', accept: { 'application/json': ['.siteserve'] } }] });
+      const out = await h.createWritable();
+      await out.write(blob);
+      await out.close();
+      return;
+    } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const name = prompt('File name', fileSafe(P.name));
+  if (name === null) return;
+  await shareOrDownload(blob, `${fileSafe(name.trim().replace(/\.siteserve$/i, '')) || fileSafe(P.name)}.siteserve`);
+}
+
 // ---------- upload to the office server (server.py) ----------
 // Everything about the project goes to DATA/<survey date>/<project>/ on the server:
 // the .siteserve backup, a DXF of all rooms, and per room its plan (PNG + DXF) and photos,
@@ -980,14 +1016,21 @@ async function importBackup(file) {
   let data;
   try { data = JSON.parse(await file.text()); } catch { data = null; }
   if (data?.app !== 'site-survey' || !data.project?.id) { alert('This is not a backup file from this app'); return; }
-  const id = data.project.id;
-  if (await db.getProject(id)) {
-    if (!confirm(`Project "${data.project.name}" already exists. Replace it with this file?`)) return;
-    await db.deleteProject(id);
+  let id = data.project.id, copy = false;
+  const have = await db.getProject(id);
+  if (have) {
+    if (confirm(`"${have.name || 'Untitled'}" is already on this phone.\n\nOK: replace it with the file\nCancel: keep it and open the file as a separate copy`)) await db.deleteProject(id);
+    else {
+      if (!confirm(`Open "${data.project.name || 'Untitled'}" as a separate copy?`)) return;
+      copy = true;
+      id = uid();
+    }
   }
-  await db.putProject(data.project);
+  await flush();
+  const project = copy ? { ...data.project, id, name: `${data.project.name || 'Untitled'} (copy)`, updatedAt: Date.now() } : data.project;
+  await db.putProject(project);
   for (const { data: url, ...rest } of data.photos || []) {
-    await db.putPhoto({ ...rest, blob: await (await fetch(url)).blob() });
+    await db.putPhoto({ ...rest, ...(copy ? { id: uid(), projectId: id } : {}), blob: await (await fetch(url)).blob() });
   }
   P = null;
   location.hash = `#/p/${id}`;
@@ -1049,6 +1092,9 @@ $app.addEventListener('click', async e => {
       }
       break;
     case 'backup': await backup(); break;
+    case 'save-as': await saveAs(); break;
+    case 'room-png': { const r = P.rooms.find(x => x.id === t.dataset.r); if (r) await exportPng(r); break; }
+    case 'room-dxf': { const r = P.rooms.find(x => x.id === t.dataset.r); if (r) await exportDxf([r], `${fileSafe(P.name)}-${fileSafe(r.name)}`); break; }
     case 'upload': await uploadProject(t); break;
     case 'delete-room':
       if (confirm(`Delete room "${room.name}" and its photos?`)) {
@@ -1358,7 +1404,9 @@ $app.addEventListener('change', async e => {
     el.value = '';
     if (files.length) await addPhotos(files, el.dataset.photoRoom, el.dataset.photoWall || null, el.hasAttribute('capture'));
   } else if (el.hasAttribute('data-import') && el.files[0]) {
-    await importBackup(el.files[0]);
+    const file = el.files[0];
+    el.value = ''; // the same file can be opened again
+    await importBackup(file);
   }
 });
 

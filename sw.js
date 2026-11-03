@@ -1,7 +1,7 @@
 // Network-first with cache fallback, so the app opens offline on site. Requests skip the
 // browser's HTTP cache: without that a phone could keep serving an old release from it.
 // Matches APP_VERSION in js/app.js; a new name makes phones fetch the new release.
-const CACHE = 'site-survey-1.0.29';
+const CACHE = 'site-survey-1.0.30';
 const SHELL = ['./', './index.html', './css/app.css', './js/app.js', './js/db.js', './js/plan.js', './js/annotate.js', './js/dxf.js', './js/zoom.js', './js/tools.js', './js/camera.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
