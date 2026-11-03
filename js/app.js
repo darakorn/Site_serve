@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.16';
+const APP_VERSION = '1.0.17';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -254,7 +254,7 @@ function summaryParts(room) {
   const h = +room.height || 0;
   const openArea = room.walls.flatMap(w => w.openings).reduce((s, o) => s + (+o.width || 0) * (+o.height || 0), 0);
   const parts = [['Floor area', g.closed ? fmtArea(g.area) : '–'], ['Perimeter', `${fmtM(g.perimeter)} m`]];
-  if (h) parts.push(['Height', `${fmtM(h)} m`], ['Net wall area', fmtArea(Math.max(0, g.perimeter * h - openArea))]);
+  if (h) parts.push(['Height', `${fmtM(h)} m`], ['Net wall area', fmtArea(Math.max(0, g.wallLen * h - openArea))]);
   return { g, parts };
 }
 function summaryHtml(room) {
@@ -345,7 +345,7 @@ function wallSummary(room, w) {
   const tags = openingTags(room);
   return [
     `${fmtLen(w.length, P.unit)} ${unitLabel()}`,
-    +w.bulge ? '⌒ curved' : '',
+    w.gap ? '┄ gap (wall deleted)' : +w.bulge ? '⌒ curved' : '',
     w.openings.map(o => tags.get(o.id) || OPEN_TYPES[o.type]).join(' '),
     w.columns?.length ? `${w.columns.length} column${w.columns.length > 1 ? 's' : ''}` : '',
     roomPhotos(room.id, w.id).length ? `📷${roomPhotos(room.id, w.id).length}` : '',
@@ -362,6 +362,28 @@ function wallCard(room, w, i) {
         <span class="badge">${i + 1}</span><b>Wall ${i + 1}</b><small>${esc(wallSummary(room, w))}</small><span class="chev">›</span>
       </button>
     </article>`;
+  }
+  if (w.gap) {
+    return `<article class="card wall gap-wall${selectedWall === w.id ? ' sel' : ''}" id="w-${w.id}">
+    <div class="wall-head${wallsCollapsed ? ' wall-fold' : ''}"${wallsCollapsed ? ` data-act="close-wall" data-w="${w.id}"` : ''}>
+      <span class="badge">${i + 1}</span><b>Gap · wall ${i + 1} deleted</b>
+      <small>${corners}</small>
+      ${wallsCollapsed ? '<span class="chev open">›</span>' : ''}
+    </div>
+    <p class="hint">The walls around it stay where they are. Put a wall back here, split the gap to fill part of it, or remove the gap to join the walls either side.</p>
+    <div class="row">
+      ${lenField('Length', 'wall.length', w.length, `data-w="${w.id}"`)}
+      ${last ? '' : `<label class="field"><span>At corner ${cornerName(i + 1)}</span><select data-turn="${w.id}">
+        ${TURNS.map(([v, l]) => `<option value="${v}"${known && v === w.turn ? ' selected' : ''}>${l}</option>`).join('')}
+        <option value="custom"${known ? '' : ' selected'}>Custom angle…</option></select></label>`}
+    </div>
+    ${!last && !known ? field('Turn angle (+ right / − left)', 'wall.turn', w.turn, 'number', `data-w="${w.id}" inputmode="text"`) : ''}
+    <div class="btns">
+      <button class="btn sm" data-act="fill-gap" data-w="${w.id}">↺ Put a wall here</button>
+      <button class="btn sm ghost" data-act="split-wall" data-w="${w.id}">✂ Split in two</button>
+      <button class="btn sm ghost danger" data-act="del-wall" data-w="${w.id}">Remove gap</button>
+    </div>
+  </article>`;
   }
   const curved = w.bulge !== undefined && w.bulge !== null;
   // In the collapsed list the open wall's header folds it back up.
@@ -459,7 +481,7 @@ function pickedItem(room) {
   const sh = room.shapes?.find(x => x.id === selectedOp);
   if (sh) return { kind: 'shape', sh, name: shapeName(sh) };
   const i = planTool ? room.walls.findIndex(x => x.id === selectedWall) : -1;
-  if (i >= 0) return { kind: 'wall', w: room.walls[i], name: `Wall ${i + 1}` };
+  if (i >= 0) return { kind: 'wall', w: room.walls[i], name: room.walls[i].gap ? `Gap (wall ${i + 1})` : `Wall ${i + 1}` };
   return null;
 }
 
@@ -474,7 +496,8 @@ function pickQuick(room) {
     <b>${esc(it.name)}</b>
     ${st && st.style !== 'slide' ? `<button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>` : ''}
     ${st && st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
-    <button class="btn sm danger" data-act="del-picked">🗑 Delete</button>
+    ${it.kind === 'wall' && it.w.gap ? `<button class="btn sm" data-act="fill-gap" data-w="${it.w.id}">↺ Put a wall here</button>` : ''}
+    <button class="btn sm danger" data-act="del-picked">🗑 ${it.kind === 'wall' && it.w.gap ? 'Remove gap' : 'Delete'}</button>
     <button class="btn sm icon-btn" data-act="${it.kind === 'wall' ? 'close-wall' : 'unpick'}" aria-label="Close">✕</button>
   </div>`;
 }
@@ -571,7 +594,7 @@ function roomReport(r) {
     ${r.shapes?.length ? `<p>Items: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
     <table class="r-table"><thead><tr><th>Wall</th><th>Length (${unitLabel()})</th><th>Doors / windows / columns</th><th>Notes</th></tr></thead><tbody>
-      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${+w.bulge ? `<br><small>bulge ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
+      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${w.gap ? '<br><small>gap (wall deleted)</small>' : +w.bulge ? `<br><small>bulge ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
     </tbody></table>
     ${list.length ? `<div class="r-photos">${list.map(p => `<figure><img data-img="${p.id}" data-size="1100" alt=""><figcaption>${esc(photoLabel(r, p))}</figcaption></figure>`).join('')}</div>` : ''}
   </section>`;
@@ -607,6 +630,26 @@ async function selectWall(id, scroll, opId = null, soft = false) {
   const target = opId && document.getElementById('op-' + opId);
   if (target && scroll) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
   else if (scroll) document.getElementById('w-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// Deleting a wall leaves a gap in its place (a dashed line), so the walls after it don't move.
+// Deleting the gap then takes it out of the chain: the walls after it move up to join on.
+async function deleteWall(room, w) {
+  const i = room.walls.indexOf(w), last = i === room.walls.length - 1;
+  if (w.gap) {
+    if (!last && !confirm('Remove this gap? The walls after it move to join on to the wall before it.')) return false;
+    room.walls.splice(i, 1);
+    if (selectedWall === w.id) selectedWall = null;
+    return true;
+  }
+  const photos = roomPhotos(room.id, w.id);
+  if (!confirm(`Delete wall ${i + 1}?${w.openings.length || w.columns?.length ? ' Its doors, windows and columns go with it.' : ''}${photos.length ? ' Its photos move to the room overview.' : ''} A dashed gap stays in its place.`)) return false;
+  for (const p of photos) { p.wallId = null; await db.putPhoto(p); }
+  w.gap = true;
+  w.openings = [];
+  w.columns = [];
+  delete w.bulge;
+  return true;
 }
 
 function closeRoom(room) {
@@ -840,10 +883,7 @@ $app.addEventListener('click', async e => {
       const it = pickedItem(room);
       if (!it) break;
       if (it.kind === 'wall') {
-        if (!confirm(`Delete ${it.name}? Its photos move to the room overview.`)) break;
-        room.walls = room.walls.filter(x => x !== it.w);
-        for (const p of roomPhotos(room.id, it.w.id)) { p.wallId = null; await db.putPhoto(p); }
-        selectedWall = null;
+        if (!(await deleteWall(room, it.w))) break;
       } else if (it.kind === 'op') {
         it.w.openings = it.w.openings.filter(x => x !== it.o);
         resolveRefs(it.w);
@@ -855,13 +895,9 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'del-wall':
-      if (confirm('Delete this wall? Its photos move to the room overview.')) {
-        room.walls = room.walls.filter(x => x !== w);
-        for (const p of roomPhotos(room.id, w.id)) { p.wallId = null; await db.putPhoto(p); }
-        save();
-        rerender();
-      }
+      if (await deleteWall(room, w)) { save(); rerender(); }
       break;
+    case 'fill-gap': delete w.gap; save(); rerender(); break;
     case 'add-op': {
       // A second door/window is measured on from the last one by default.
       const last = w.openings.at(-1);
@@ -948,7 +984,7 @@ $app.addEventListener('click', async e => {
       if (+w.bulge) { alert('A curved wall can\'t be split — make it straight first'); break; }
       // Two straight halves; doors, windows and columns past the middle move to the second half.
       const L = +w.length || 0, h = Math.round(L * 5) / 10;
-      const second = { ...newWall(), length: Math.round((L - h) * 10) / 10, turn: w.turn, customTurn: w.customTurn };
+      const second = { ...newWall(), length: Math.round((L - h) * 10) / 10, turn: w.turn, customTurn: w.customTurn, ...(w.gap ? { gap: true } : {}) };
       second.openings = w.openings.filter(o => +o.offset >= h).map(o => ({ ...o, offset: +o.offset - h }));
       second.columns = (w.columns || []).filter(c => +c.offset >= h).map(c => ({ ...c, offset: +c.offset - h }));
       w.openings = w.openings.filter(o => +o.offset < h);

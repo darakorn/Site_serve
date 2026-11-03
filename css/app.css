@@ -130,6 +130,7 @@ body.plan-full { overflow: hidden; }
 
 .wall { scroll-margin-top: calc(var(--bar-h) + 38vh + 70px); }
 .wall.sel { border-color: var(--acc); box-shadow: inset 0 0 0 1px var(--acc); }
+.wall.gap-wall { border-style: dashed; }
 .wall-head { display: flex; align-items: center; gap: 8px; }
 .wall-head small { flex: 1; }
 .walls-bar { display: flex; align-items: center; justify-content: space-between; margin: 16px 2px 8px; }

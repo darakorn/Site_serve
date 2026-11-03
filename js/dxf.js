@@ -87,9 +87,10 @@ function drawRoom(w, room, ox, oy, unit, t) {
   // Outside face at a corner: where the outer faces of the walls either side meet (mitre).
   const outerCorner = (end, sg) => {
     const k = segs.indexOf(sg);
-    const other = end === 'start'
+    let other = end === 'start'
       ? (k > 0 ? segs[k - 1] : geo.closed ? segs[segs.length - 1] : null)
       : (k < segs.length - 1 ? segs[k + 1] : geo.closed ? segs[0] : null);
+    if (other?.gap) other = null;
     const here = at(sg, end === 'start' ? 0 : sg.len * 10), o2 = here.o;
     if (!other) return add(here.p, o2, t);
     const o1 = at(other, end === 'start' ? other.len * 10 : 0).o, dot = o1.x * o2.x + o1.y * o2.y;
@@ -98,6 +99,7 @@ function drawRoom(w, room, ox, oy, unit, t) {
   };
 
   for (const sg of segs) {
+    if (sg.gap) continue; // a deleted wall: nothing to build
     const A = P(sg.p0), B = P(sg.p1);
     const len = sg.len * 10;
     const u = { x: (B.x - A.x) / len, y: (B.y - A.y) / len };

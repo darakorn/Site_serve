@@ -204,14 +204,17 @@ export function geometry(room) {
   }
   const cw = a2 >= 0; // clockwise on screen (y down) → room is on the right of each wall
   const inwardOf = inwardFor(cw);
-  let area = Math.abs(a2) / 2, perimeter = 0;
+  let area = Math.abs(a2) / 2, perimeter = 0, gaps = 0;
 
   // Curved walls: `bulge` is how far the middle of the wall bows out from the straight line
   // between its corners (+ away from the room, − into it), up to a half circle.
   for (const sg of segs) {
     sg.inwardOf = inwardOf;
     sg.inward = inwardOf(sg.u);
-    const h = clamp(+sg.wall.bulge || 0, -sg.len / 2, sg.len / 2);
+    // A deleted wall stays in the chain as a straight gap, so the walls after it keep their place.
+    sg.gap = !!sg.wall.gap;
+    if (sg.gap) gaps += sg.len;
+    const h = sg.gap ? 0 : clamp(+sg.wall.bulge || 0, -sg.len / 2, sg.len / 2);
     if (Math.abs(h) < 0.5 || !sg.len) { perimeter += sg.len; continue; }
     const c = sg.len, r = (c * c / 4 + h * h) / (2 * Math.abs(h));
     const out = { x: -sg.inward.x, y: -sg.inward.y }, sign = Math.sign(h);
@@ -224,7 +227,22 @@ export function geometry(room) {
   }
   // Corners plus the tip of each curved wall: what the plan has to fit.
   const extent = [...pts, ...segs.filter(sg => sg.arc).map(sg => sg.arc.apex)];
-  return { pts, segs, end, gap, closed: gap < 1 && (segs.length >= 3 || (segs.length === 2 && segs.every(sg => sg.arc))), area, perimeter, cw, extent };
+  return { pts, segs, end, gap, wallLen: perimeter - gaps, closed: gap < 1 && (segs.length >= 3 || (segs.length === 2 && segs.every(sg => sg.arc))), area, perimeter, cw, extent };
+}
+
+// Unbroken stretches of wall between gaps. A closed room with no gap is one loop.
+export function wallRuns(g) {
+  const segs = g.segs, n = segs.length, first = segs.findIndex(sg => sg.gap);
+  if (first < 0) return n ? [{ segs, loop: g.closed }] : [];
+  // In a closed room a run may wrap past the last wall to the first, so start after a gap.
+  const order = g.closed ? [...segs.slice(first + 1), ...segs.slice(0, first + 1)] : segs;
+  const runs = [];
+  let cur = [];
+  for (const sg of order) {
+    if (sg.gap) { if (cur.length) runs.push({ segs: cur, loop: false }); cur = []; } else cur.push(sg);
+  }
+  if (cur.length) runs.push({ segs: cur, loop: false });
+  return runs;
 }
 
 // SVG path through the room's corners, with arcs for curved walls. X maps plan → SVG.
@@ -303,10 +321,12 @@ export function renderPlan(room, opt = {}) {
 
   const corners = g.closed ? g.pts.slice(0, -1) : g.pts;
   out.push(`<path d="${wallPath(g, X, g.segs, true)}" fill="#f3efe6"/>`);
-  out.push(`<path d="${wallPath(g, X)}" fill="none" stroke="${INK}" stroke-width="${f(T)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
+  // Walls in runs between gaps; a gap (a deleted wall) is a dashed line waiting to be filled in.
+  for (const run of wallRuns(g)) out.push(`<path d="${wallPath(g, X, run.segs, run.loop)}" fill="none" stroke="${INK}" stroke-width="${f(T)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
+  for (const sg of g.segs.filter(x => x.gap)) out.push(line(X(sg.p0), X(sg.p1), `stroke="${DIM}" stroke-width="${f(Z(mini ? 1 : 1.6))}" ${dash(7, 5)}`));
 
   const sel = g.segs.find(sg => sg.wall.id === opt.selected);
-  if (sel && !mini) out.push(`<path d="${wallPath(g, X, [sel], false)}" fill="none" stroke="${ACC}" stroke-width="${f(T)}" stroke-linecap="square"/>`);
+  if (sel && !mini) out.push(`<path d="${wallPath(g, X, [sel], false)}" fill="none" stroke="${ACC}" stroke-width="${f(sel.gap ? Z(2.5) : T)}" stroke-linecap="square"${sel.gap ? ' ' + dash(7, 5) : ''}/>`);
 
   // Doors, windows and other openings
   // On a curved wall each opening is drawn straight between its two ends on the arc.
