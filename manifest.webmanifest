@@ -1,6 +1,6 @@
 {
-  "name": "สำรวจหน้างาน",
-  "short_name": "สำรวจ",
+  "name": "Site Survey",
+  "short_name": "Survey",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -15,9 +15,9 @@ export const fmtM = cm => ((+cm || 0) / 100).toFixed(2);
 // Lengths are stored in cm; a project picks the unit used for typing and for plan labels.
 // k: factor from cm, fix: decimals on plan labels, input: decimals kept when showing a value in a form.
 export const UNITS = {
-  mm: { k: 10, label: 'มม.', fix: 0, input: 1 },
-  cm: { k: 1, label: 'ซม.', fix: 0, input: 2 },
-  m: { k: 0.01, label: 'ม.', fix: 2, input: 4 },
+  mm: { k: 10, label: 'mm', fix: 0, input: 1 },
+  cm: { k: 1, label: 'cm', fix: 0, input: 2 },
+  m: { k: 0.01, label: 'm', fix: 2, input: 4 },
 };
 export const unitOf = u => (UNITS[u] ? u : 'cm');
 export const toUnit = (cm, u) => (cm === '' || cm == null ? '' : +((+cm || 0) * UNITS[unitOf(u)].k).toFixed(UNITS[unitOf(u)].input));
@@ -28,13 +28,13 @@ export function fmtLen(cm, u) {
   const r = d => (Math.round(v * 10 ** d + 1e-9) / 10 ** d).toFixed(d); // 3.505 → 3.51, not toFixed's 3.50
   return unitOf(u) === 'cm' && Math.round(v) !== +r(1) ? r(1) : r(fix);
 }
-export const fmtArea = cm2 => (cm2 / 10000).toFixed(2) + ' ตร.ม.';
+export const fmtArea = cm2 => (cm2 / 10000).toFixed(2) + ' m²';
 export const cornerName = i => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : '');
 export const normAngle = a => Math.round(((((a % 360) + 540) % 360) - 180) * 10) / 10;
 
 export const OPEN_STYLES = {
-  door: { swing: 'บานเปิด', slide: 'บานเลื่อน', double: 'บานสวิง 2 ทาง' },
-  window: { casement: 'บานเปิด', slide: 'บานเลื่อน', awning: 'บานกระทุ้ง' },
+  door: { swing: 'Hinged', slide: 'Sliding', double: 'Double-acting' },
+  window: { casement: 'Casement', slide: 'Sliding', awning: 'Awning' },
 };
 export const OPEN_STYLE_DEFAULTS = { door: { style: 'swing', leaves: 1 }, window: { style: 'slide', leaves: 2 } };
 export const MAX_LEAVES = { door: 4, window: 6 };
@@ -172,7 +172,7 @@ export function segPoint(sg, x) {
 
 // Things drawn into the plan (counters, built-ins…), in plan cm from corner A, y down:
 // line { x1, y1, x2, y2 }, rect { x, y, w, h }, circle { x, y (centre), d (diameter) }; each may have a label.
-export const SHAPE_TYPES = { line: 'เส้นตรง', rect: 'สี่เหลี่ยม', circle: 'วงกลม' };
+export const SHAPE_TYPES = { line: 'Line', rect: 'Rectangle', circle: 'Circle' };
 export function shapePoints(sh) {
   if (sh.type === 'line') return [{ x: +sh.x1 || 0, y: +sh.y1 || 0 }, { x: +sh.x2 || 0, y: +sh.y2 || 0 }];
   if (sh.type === 'rect') return [{ x: +sh.x || 0, y: +sh.y || 0 }, { x: (+sh.x || 0) + (+sh.w || 0), y: (+sh.y || 0) + (+sh.h || 0) }];
@@ -271,7 +271,7 @@ export function renderPlan(room, opt = {}) {
   const shapes = [...(room.shapes || []), ...(opt.draft ? [{ ...opt.draft, id: '__draft' }] : [])];
   // An empty room still gets a frame in the editor, so its first walls can be drawn on it.
   if (!g.segs.length && (mini || opt.export || !opt.editing)) {
-    return `${svgOpen(120)}<text x="${VW / 2}" y="64" text-anchor="middle" fill="${DIM}" font-size="14">ยังไม่มีผนัง</text></svg>`;
+    return `${svgOpen(120)}<text x="${VW / 2}" y="64" text-anchor="middle" fill="${DIM}" font-size="14">No walls yet</text></svg>`;
   }
 
   const head = opt.export ? 46 : 0;
@@ -452,7 +452,7 @@ export function renderPlan(room, opt = {}) {
     if (g.segs.length >= 2 && g.gap >= 1) {
       const a = X(g.end), b = X(g.pts[0]);
       out.push(line(a, b, `stroke="${RED}" stroke-width="${f(Z(1.5))}" ${dash(5, 4)}`));
-      text(0, mid(a, b), `ห่าง ${fmtLen(g.gap, opt.unit)} ${UNITS[unitOf(opt.unit)].label}`, 11, 0, `fill="${RED}" ${halo}`);
+      text(0, mid(a, b), `gap ${fmtLen(g.gap, opt.unit)} ${UNITS[unitOf(opt.unit)].label}`, 11, 0, `fill="${RED}" ${halo}`);
     }
 
     const placed = [], gapPx = Z(1);

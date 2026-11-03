@@ -108,6 +108,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 .zoom-reset { position: absolute; right: 8px; bottom: 8px; display: none; background: var(--card); box-shadow: 0 1px 4px rgb(0 0 0 / .2); }
 .plan-box.zoomed .zoom-reset { display: inline-flex; }
 .plan svg { display: block; width: 100%; max-height: 36vh; }
+/* Editing on the plan: the plan fills the screen, tools along the bottom. */
+body.plan-full { overflow: hidden; }
+.plan-wrap.full {
+  position: fixed; inset: 0; z-index: 30; margin: 0;
+  display: flex; flex-direction: column;
+  padding: calc(env(safe-area-inset-top) + 8px) 10px calc(env(safe-area-inset-bottom) + 8px);
+}
+.plan-wrap.full .plan-box { flex: 1; min-height: 0; display: flex; }
+.plan-wrap.full .plan { flex: 1; align-items: center; }
+.plan-wrap.full .plan svg { height: 100%; max-height: none; }
+.plan-wrap.full .summary { display: none; }
 .summary { display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 6px 2px 0; font-size: 13px; color: var(--muted); }
 .summary b { color: var(--ink); }
 .warn {
@@ -149,7 +160,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acc); outli
 .col-f { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 0 6px; }
 .op-kind { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .op-kind .op-tag { flex: 0 0 64px; width: 64px; font-weight: 700; text-align: center; background: var(--card); }
-.op-kind select { flex: 1; min-width: 0; }
+.op-kind select { flex: 1 1 7.5em; min-width: 0; } /* wraps to a new line rather than squeezing to one letter */
 .op input, .op select { background: var(--card); }
 .btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 

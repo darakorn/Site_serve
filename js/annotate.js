@@ -92,7 +92,7 @@ export async function renderAnnotated(blob, anns, maxW) {
 }
 
 
-export async function openAnnotator(photo, { title = '', unitLabel = 'ซม.', onSave, onDelete }) {
+export async function openAnnotator(photo, { title = '', unitLabel = 'cm', onSave, onDelete }) {
   // A bare number gets the project's unit; anything else is kept as typed.
   const withUnit = t => (/^\d+(\.\d+)?$/.test(t.trim()) ? `${t.trim()} ${unitLabel}` : t.trim());
   const anns = structuredClone(photo.annotations || []);
@@ -100,20 +100,20 @@ export async function openAnnotator(photo, { title = '', unitLabel = 'ซม.', 
   ov.className = 'annot';
   ov.innerHTML = `
     <div class="annot-bar">
-      <button data-a="close">ปิด</button>
+      <button data-a="close">Close</button>
       <span class="annot-title"></span>
-      <button data-a="save" class="primary">บันทึก</button>
+      <button data-a="save" class="primary">Save</button>
     </div>
     <div class="annot-stage"><canvas></canvas></div>
     <div class="annot-tools">
-      <button data-tool="line" class="on">↔ เส้นระยะ</button>
-      <button data-tool="text">T ข้อความ</button>
-      <button data-tool="pen">✎ ปากกา</button>
-      <button data-a="undo">↶ ย้อน</button>
-      <button data-a="delete" class="danger">ลบรูป</button>
+      <button data-tool="line" class="on">↔ Dimension</button>
+      <button data-tool="text">T Text</button>
+      <button data-tool="pen">✎ Pen</button>
+      <button data-a="undo">↶ Undo</button>
+      <button data-a="delete" class="danger">Delete photo</button>
     </div>
-    <div class="annot-colors">${COLORS.map(c => `<button data-color="${c}" style="background:${c}" aria-label="สี ${c}"></button>`).join('')}</div>
-    <input class="annot-note" placeholder="คำอธิบายรูป เช่น มุมห้องด้านหน้าต่าง">`;
+    <div class="annot-colors">${COLORS.map(c => `<button data-color="${c}" style="background:${c}" aria-label="Colour ${c}"></button>`).join('')}</div>
+    <input class="annot-note" placeholder="Photo caption, e.g. corner by the window">`;
   ov.querySelector('.annot-title').textContent = title;
   const markColor = () => ov.querySelectorAll('[data-color]').forEach(x => x.classList.toggle('on', x.dataset.color === lastColor));
   markColor();
@@ -155,7 +155,7 @@ export async function openAnnotator(photo, { title = '', unitLabel = 'ซม.', 
       const box = document.createElement('form');
       box.className = 'annot-ask';
       box.innerHTML = `<div><label></label><input enterkeyhint="done">
-        <p><button type="button">ยกเลิก</button><button type="submit" class="primary">ตกลง</button></p></div>`;
+        <p><button type="button">Cancel</button><button type="submit" class="primary">OK</button></p></div>`;
       box.querySelector('label').textContent = label;
       const input = box.querySelector('input');
       const done = v => { box.remove(); resolve(v); };
@@ -197,13 +197,13 @@ export async function openAnnotator(photo, { title = '', unitLabel = 'ซม.', 
     }
     busy = true;
     if (s) {
-      const t = await ask('ข้อความ');
+      const t = await ask('Text');
       if (t?.trim()) { anns.push({ type: 'text', color: lastColor, x: s.x, y: s.y, text: withUnit(t) }); dirty = true; }
     } else if (d) {
       const r = canvas.getBoundingClientRect();
       if (Math.hypot((d.x2 - d.x1) * r.width, (d.y2 - d.y1) * r.height) > 14) {
         anns.push(d); draw();
-        const t = await ask(`ระยะ (${unitLabel})`);
+        const t = await ask(`Distance (${unitLabel})`);
         if (t === null) anns.pop();
         else { d.text = withUnit(t); dirty = true; }
       }
@@ -233,9 +233,9 @@ export async function openAnnotator(photo, { title = '', unitLabel = 'ซม.', 
     } else if (b.dataset.a === 'save') {
       close(); onSave(anns, note.value);
     } else if (b.dataset.a === 'close') {
-      if (!(dirty || note.value !== (photo.note || '')) || confirm('ยังไม่ได้บันทึก ปิดเลยไหม?')) close();
+      if (!(dirty || note.value !== (photo.note || '')) || confirm('Close without saving?')) close();
     } else if (b.dataset.a === 'delete') {
-      if (confirm('ลบรูปนี้?')) { close(); onDelete(); }
+      if (confirm('Delete this photo?')) { close(); onDelete(); }
     }
   });
 }

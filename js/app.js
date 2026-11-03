@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.13';
+const APP_VERSION = '1.0.14';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -14,8 +14,8 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const today = () => new Date().toLocaleDateString('sv');
 const fileSafe = s => String(s || 'plan').replace(/[\\/:*?"<>|]+/g, '_').trim();
 
-const TURNS = [[90, 'เลี้ยวขวา 90°'], [-90, 'เลี้ยวซ้าย 90°'], [45, 'เลี้ยวขวา 45°'], [-45, 'เลี้ยวซ้าย 45°'], [0, 'ตรงไป (ไม่เลี้ยว)']];
-const OPEN_TYPES = { door: 'ประตู', window: 'หน้าต่าง', opening: 'ช่องเปิด' };
+const TURNS = [[90, 'Turn right 90°'], [-90, 'Turn left 90°'], [45, 'Turn right 45°'], [-45, 'Turn left 45°'], [0, 'Straight on (no turn)']];
+const OPEN_TYPES = { door: 'Door', window: 'Window', opening: 'Opening' };
 const OPEN_DEFAULTS = {
   door: { offset: 30, width: 80, height: 200, ...OPEN_STYLE_DEFAULTS.door },
   window: { offset: 50, width: 120, height: 110, sill: 90, ...OPEN_STYLE_DEFAULTS.window },
@@ -110,7 +110,7 @@ function photoCounts(room) {
 }
 function photoLabel(room, p) {
   const i = room.walls.findIndex(w => w.id === p.wallId);
-  return [i >= 0 ? `ผนัง ${i + 1}` : 'ภาพรวมห้อง', p.note].filter(Boolean).join(' · ');
+  return [i >= 0 ? `Wall ${i + 1}` : 'Room overview', p.note].filter(Boolean).join(' · ');
 }
 
 // ---------- routing ----------
@@ -135,6 +135,7 @@ async function route() {
   scrollTo(0, 0);
 }
 function render() {
+  if (view.name !== 'room') { planTool = null; document.body.classList.remove('plan-full'); }
   return { home: viewHome, project: viewProject, room: viewRoom, report: viewReport }[view.name]();
 }
 async function rerender() {
@@ -154,16 +155,16 @@ function field(label, key, val, type = 'text', extra = '') {
 // A length stored in cm, shown and typed in the project's unit.
 const unitLabel = () => UNITS[unitOf(P?.unit)].label;
 const lenField = (label, key, cm, extra = '') => field(`${label} (${unitLabel()})`, key, toUnit(cm, P?.unit), 'number', `data-len ${extra}`);
-const UNIT_NAMES = { mm: 'มิลลิเมตร (มม.)', cm: 'เซนติเมตร (ซม.)', m: 'เมตร (ม.)' };
+const UNIT_NAMES = { mm: 'Millimetres (mm)', cm: 'Centimetres (cm)', m: 'Metres (m)' };
 const bar = (back, title, right = '') =>
-  `<header class="bar${view.name === 'report' ? ' noprint' : ''}">${back ? `<a class="back" href="${back}" aria-label="กลับ">‹</a>` : ''}<h1>${esc(title)}</h1>${right}</header>`;
+  `<header class="bar${view.name === 'report' ? ' noprint' : ''}">${back ? `<a class="back" href="${back}" aria-label="Back">‹</a>` : ''}<h1>${esc(title)}</h1>${right}</header>`;
 
 function photoStrip(roomId, wallId) {
   const attrs = `data-photo-room="${roomId}" data-photo-wall="${wallId || ''}"`;
   return `<div class="photos">
-    ${roomPhotos(roomId, wallId).map(p => `<button class="thumb" data-act="open-photo" data-ph="${p.id}" aria-label="เปิดรูป"><img data-img="${p.id}" alt=""></button>`).join('')}
-    <label class="thumb add">📷<span>ถ่ายรูป</span><input type="file" accept="image/*" capture="environment" ${attrs} hidden></label>
-    <label class="thumb add">🖼<span>คลังรูป</span><input type="file" accept="image/*" multiple ${attrs} hidden></label>
+    ${roomPhotos(roomId, wallId).map(p => `<button class="thumb" data-act="open-photo" data-ph="${p.id}" aria-label="Open photo"><img data-img="${p.id}" alt=""></button>`).join('')}
+    <label class="thumb add">📷<span>Camera</span><input type="file" accept="image/*" capture="environment" ${attrs} hidden></label>
+    <label class="thumb add">🖼<span>Gallery</span><input type="file" accept="image/*" multiple ${attrs} hidden></label>
   </div>`;
 }
 
@@ -183,55 +184,55 @@ function dropCache(photoId) {
 // ---------- views ----------
 async function viewHome() {
   const list = (await db.allProjects()).sort((a, b) => b.updatedAt - a.updatedAt);
-  $app.innerHTML = `${bar('', 'สำรวจหน้างาน')}
+  $app.innerHTML = `${bar('', 'Site Survey')}
   <main>
-    <button class="btn primary block" data-act="new-project">+ โปรเจกต์ใหม่</button>
+    <button class="btn primary block" data-act="new-project">+ New project</button>
     ${list.length
-      ? list.map(p => `<a class="card link" href="#/p/${p.id}"><b>${esc(p.name || 'ไม่มีชื่อ')}</b><small>${[p.site, `${p.rooms.length} ห้อง`, p.date].filter(Boolean).map(esc).join(' · ')}</small></a>`).join('')
-      : '<p class="empty">ยังไม่มีโปรเจกต์ กดปุ่มด้านบนเพื่อเริ่มสำรวจ</p>'}
-    <label class="btn ghost block">นำเข้าไฟล์สำรอง (.json)<input type="file" accept=".json,application/json" data-import hidden></label>
-    <p class="hint version">เวอร์ชัน ${APP_VERSION}</p>
+      ? list.map(p => `<a class="card link" href="#/p/${p.id}"><b>${esc(p.name || 'Untitled')}</b><small>${[p.site, `${p.rooms.length} room${p.rooms.length === 1 ? '' : 's'}`, p.date].filter(Boolean).map(esc).join(' · ')}</small></a>`).join('')
+      : '<p class="empty">No projects yet. Tap the button above to start a survey.</p>'}
+    <label class="btn ghost block">Import backup (.json)<input type="file" accept=".json,application/json" data-import hidden></label>
+    <p class="hint version">Version ${APP_VERSION}</p>
   </main>`;
 }
 
 function viewProject() {
   const counts = r => roomPhotos(r.id).length;
-  $app.innerHTML = `${bar('#/', P.name || 'โปรเจกต์')}
+  $app.innerHTML = `${bar('#/', P.name || 'Project')}
   <main>
     <section class="card">
-      ${field('ชื่อโปรเจกต์', 'project.name', P.name)}
-      ${field('ลูกค้า', 'project.client', P.client)}
-      ${field('สถานที่', 'project.site', P.site)}
-      <div class="row">${field('วันที่สำรวจ', 'project.date', P.date, 'date')}${field('ผู้สำรวจ', 'project.surveyor', P.surveyor)}</div>
-      ${lenField('ความหนาผนังสำหรับ DXF', 'project.wallThickness', P.wallThickness ?? 10, 'placeholder="10 ซม."')}
-      <label class="field"><span>หน่วยวัดระยะ (ใช้กรอกและแสดงในแปลน)</span><select data-f="project.unit">
+      ${field('Project name', 'project.name', P.name)}
+      ${field('Client', 'project.client', P.client)}
+      ${field('Site', 'project.site', P.site)}
+      <div class="row">${field('Survey date', 'project.date', P.date, 'date')}${field('Surveyor', 'project.surveyor', P.surveyor)}</div>
+      ${lenField('Wall thickness for DXF', 'project.wallThickness', P.wallThickness ?? 10, 'placeholder="10 cm"')}
+      <label class="field"><span>Length unit (for typing and on the plan)</span><select data-f="project.unit">
         ${Object.entries(UNIT_NAMES).map(([k, l]) => `<option value="${k}"${unitOf(P.unit) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-      ${field('หมายเหตุ', 'project.note', P.note, 'textarea')}
+      ${field('Notes', 'project.note', P.note, 'textarea')}
     </section>
-    <h2>ห้อง (${P.rooms.length})</h2>
+    <h2>Rooms (${P.rooms.length})</h2>
     ${P.rooms.map(r => {
       const g = geometry(r);
       return `<a class="card link room-card" href="#/p/${P.id}/r/${r.id}">
         <div class="mini">${renderPlan(r, { mini: true })}</div>
-        <div><b>${esc(r.name)}</b><small>${r.walls.length} ผนัง · ${g.closed ? fmtArea(g.area) : 'ยังไม่ปิดห้อง'} · 📷 ${counts(r)}</small></div>
+        <div><b>${esc(r.name)}</b><small>${r.walls.length} walls · ${g.closed ? fmtArea(g.area) : 'not closed'} · 📷 ${counts(r)}</small></div>
       </a>`;
     }).join('')}
     <section class="card">
-      <h3>เพิ่มห้อง</h3>
-      <label class="field"><span>ชื่อห้อง</span><input id="nr-name" placeholder="เช่น ห้องนอน 1"></label>
+      <h3>Add a room</h3>
+      <label class="field"><span>Room name</span><input id="nr-name" placeholder="e.g. Bedroom 1"></label>
       <div class="row">
-        <label class="field"><span>กว้าง (${unitLabel()})</span><input id="nr-w" type="number" inputmode="decimal" step="any"></label>
-        <label class="field"><span>ยาว (${unitLabel()})</span><input id="nr-l" type="number" inputmode="decimal" step="any"></label>
+        <label class="field"><span>Width (${unitLabel()})</span><input id="nr-w" type="number" inputmode="decimal" step="any"></label>
+        <label class="field"><span>Length (${unitLabel()})</span><input id="nr-l" type="number" inputmode="decimal" step="any"></label>
       </div>
-      <p class="hint">ใส่กว้าง × ยาว เพื่อสร้างห้องสี่เหลี่ยมทันที หรือเว้นว่างไว้แล้วค่อยใส่ผนังทีละด้าน</p>
-      <button class="btn primary block" data-act="add-room">+ เพิ่มห้อง</button>
+      <p class="hint">Enter width × length for a rectangular room, or leave blank and add walls one by one.</p>
+      <button class="btn primary block" data-act="add-room">+ Add room</button>
     </section>
-    <h2>ส่งออก</h2>
-    <a class="btn block" href="#/p/${P.id}/report">📄 รายงานแปลน + รูป (พิมพ์ / PDF)</a>
-    <button class="btn block" data-act="export-dxf-all">📐 แปลนทุกห้องเป็น DXF (CAD)</button>
-    <button class="btn block" data-act="upload">☁️ อัปโหลดเข้า server (DATA)</button>
-    <button class="btn block" data-act="backup">💾 สำรองโปรเจกต์เป็นไฟล์</button>
-    <button class="btn ghost danger block" data-act="delete-project">ลบโปรเจกต์</button>
+    <h2>Export</h2>
+    <a class="btn block" href="#/p/${P.id}/report">📄 Report: plans + photos (print / PDF)</a>
+    <button class="btn block" data-act="export-dxf-all">📐 All plans as DXF (CAD)</button>
+    <button class="btn block" data-act="upload">☁️ Upload to server (DATA)</button>
+    <button class="btn block" data-act="backup">💾 Back up project to a file</button>
+    <button class="btn ghost danger block" data-act="delete-project">Delete project</button>
   </main>`;
 }
 
@@ -239,16 +240,16 @@ function summaryParts(room) {
   const g = geometry(room);
   const h = +room.height || 0;
   const openArea = room.walls.flatMap(w => w.openings).reduce((s, o) => s + (+o.width || 0) * (+o.height || 0), 0);
-  const parts = [['พื้นที่พื้น', g.closed ? fmtArea(g.area) : '–'], ['ความยาวรอบห้อง', `${fmtM(g.perimeter)} ม.`]];
-  if (h) parts.push(['สูง', `${fmtM(h)} ม.`], ['พื้นที่ผนังสุทธิ', fmtArea(Math.max(0, g.perimeter * h - openArea))]);
+  const parts = [['Floor area', g.closed ? fmtArea(g.area) : '–'], ['Perimeter', `${fmtM(g.perimeter)} m`]];
+  if (h) parts.push(['Height', `${fmtM(h)} m`], ['Net wall area', fmtArea(Math.max(0, g.perimeter * h - openArea))]);
   return { g, parts };
 }
 function summaryHtml(room) {
   const { g, parts } = summaryParts(room);
   let html = parts.map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('');
   if (room.walls.length >= 2 && g.gap >= 1) {
-    html += `<div class="warn"><span>⚠ ห้องยังไม่ปิด ปลายผนังสุดท้ายห่างจากมุม A <b>${fmtLen(g.gap, P.unit)} ${unitLabel()}</b> ถ้าห่างนิดเดียวอาจเป็นความคลาดเคลื่อนตอนวัด</span>
-      <button class="btn sm" data-act="close-room">เพิ่มผนังปิดห้องให้</button></div>`;
+    html += `<div class="warn"><span>⚠ The room is not closed: the last wall ends <b>${fmtLen(g.gap, P.unit)} ${unitLabel()}</b> from corner A. A small gap is usually measuring error.</span>
+      <button class="btn sm" data-act="close-room">Add a closing wall</button></div>`;
   }
   return html;
 }
@@ -269,11 +270,11 @@ function kindRow(o, at, autoTag) {
   if (!st) return '';
   const opt = (v, l, on) => `<option value="${v}"${on ? ' selected' : ''}>${l}</option>`;
   return `<div class="op-kind">
-    <input class="op-tag" data-f="op.tag" ${at} value="${esc(o.tag || '')}" placeholder="${esc(autoTag)}" aria-label="ชื่อ เช่น D1">
-    <select data-f="op.style" ${at} aria-label="แบบบาน">${Object.entries(OPEN_STYLES[o.type]).map(([k, l]) => opt(k, l, k === st.style)).join('')}</select>
-    <select data-f="op.leaves" ${at} aria-label="จำนวนบาน">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} บาน`, i + 1 === st.leaves)).join('')}</select>
-    ${o.type === 'door' && st.style === 'swing' ? `<select data-f="op.swing" ${at} aria-label="ทิศเปิด">${opt('in', 'เปิดเข้า', o.swing !== 'out')}${opt('out', 'เปิดออก', o.swing === 'out')}</select>` : ''}
-    ${o.type === 'door' && st.style !== 'slide' ? `<select data-f="op.hinge" ${at} aria-label="ฝั่งบานพับ">${opt('left', 'บานพับซ้าย', o.hinge !== 'right')}${opt('right', 'บานพับขวา', o.hinge === 'right')}</select>` : ''}
+    <input class="op-tag" data-f="op.tag" ${at} value="${esc(o.tag || '')}" placeholder="${esc(autoTag)}" aria-label="Tag, e.g. D1">
+    <select data-f="op.style" ${at} aria-label="Type">${Object.entries(OPEN_STYLES[o.type]).map(([k, l]) => opt(k, l, k === st.style)).join('')}</select>
+    <select data-f="op.leaves" ${at} aria-label="Leaves">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} leaf${i ? 's' : ''}`, i + 1 === st.leaves)).join('')}</select>
+    ${o.type === 'door' && st.style === 'swing' ? `<select data-f="op.swing" ${at} aria-label="Opens">${opt('in', 'Opens in', o.swing !== 'out')}${opt('out', 'Opens out', o.swing === 'out')}</select>` : ''}
+    ${o.type === 'door' && st.style !== 'slide' ? `<select data-f="op.hinge" ${at} aria-label="Hinge side">${opt('left', 'Hinge left', o.hinge !== 'right')}${opt('right', 'Hinge right', o.hinge === 'right')}</select>` : ''}
   </div>`;
 }
 
@@ -282,13 +283,13 @@ function columnRow(w, c) {
   const idx = P && curRoom().walls.indexOf(w);
   const round = c.shape === 'round';
   return `<div class="op col${selectedOp === c.id ? ' picked' : ''}" id="op-${c.id}">
-    <select data-f="col.shape" ${at} aria-label="รูปเสา"><option value="rect"${round ? '' : ' selected'}>เสาเหลี่ยม</option><option value="round"${round ? ' selected' : ''}>เสากลม</option></select>
-    <button class="icon" data-act="del-col" ${at} aria-label="ลบเสา">✕</button>
+    <select data-f="col.shape" ${at} aria-label="Column shape"><option value="rect"${round ? '' : ' selected'}>Square column</option><option value="round"${round ? ' selected' : ''}>Round column</option></select>
+    <button class="icon" data-act="del-col" ${at} aria-label="Delete column">✕</button>
     <div class="col-f">
-      ${lenField(`ห่างมุม ${cornerName(idx)}`, 'col.offset', c.offset, at)}
-      ${lenField('ห่างจากผนัง', 'col.gap', c.gap, at)}
-      ${lenField(round ? 'เส้นผ่านศูนย์กลาง' : 'กว้างตามผนัง', 'col.width', c.width, at)}
-      ${round ? '' : lenField('ลึกเข้าห้อง', 'col.depth', c.depth, at)}
+      ${lenField(`From corner ${cornerName(idx)}`, 'col.offset', c.offset, at)}
+      ${lenField('From wall', 'col.gap', c.gap, at)}
+      ${lenField(round ? 'Diameter' : 'Width along wall', 'col.width', c.width, at)}
+      ${round ? '' : lenField('Depth into room', 'col.depth', c.depth, at)}
     </div>
   </div>`;
 }
@@ -311,17 +312,17 @@ function openingRow(w, o) {
   const tags = openingTags(curRoom()), before = w.openings.slice(0, w.openings.indexOf(o));
   const ref = o.ref && before.find(x => x.id === o.ref);
   return `<div class="op${selectedOp === o.id ? ' picked' : ''}" id="op-${o.id}">
-    <select data-f="op.type" ${at} aria-label="ชนิดช่องเปิด">${Object.entries(OPEN_TYPES).map(([k, l]) => `<option value="${k}"${o.type === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
-    <button class="icon" data-act="del-op" ${at} aria-label="ลบ">✕</button>
+    <select data-f="op.type" ${at} aria-label="Kind">${Object.entries(OPEN_TYPES).map(([k, l]) => `<option value="${k}"${o.type === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
+    <button class="icon" data-act="del-op" ${at} aria-label="Delete">✕</button>
     ${kindRow(o, at, tags.get(o.id) || '')}
-    ${before.length ? `<label class="field op-ref"><span>วัดระยะจาก</span><select data-f="op.ref" ${at}>
-      <option value="">มุม ${cornerName(idx)}</option>
-      ${before.map(x => `<option value="${x.id}"${ref === x ? ' selected' : ''}>ขอบหลัง ${esc(opName(tags, x))}</option>`).join('')}</select></label>` : ''}
+    ${before.length ? `<label class="field op-ref"><span>Measure from</span><select data-f="op.ref" ${at}>
+      <option value="">Corner ${cornerName(idx)}</option>
+      ${before.map(x => `<option value="${x.id}"${ref === x ? ' selected' : ''}>End of ${esc(opName(tags, x))}</option>`).join('')}</select></label>` : ''}
     <div class="op-f">
-      ${ref ? lenField(`ห่างจาก ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`ห่างมุม ${cornerName(idx)}`, 'op.offset', o.offset, at)}
-      ${lenField('กว้าง', 'op.width', o.width, at)}
-      ${lenField('สูง', 'op.height', o.height, at)}
-      ${o.type === 'window' ? lenField('สูงจากพื้น', 'op.sill', o.sill, at) : ''}
+      ${ref ? lenField(`From ${esc(opName(tags, ref))}`, 'op.refGap', o.refGap, at) : lenField(`From corner ${cornerName(idx)}`, 'op.offset', o.offset, at)}
+      ${lenField('Width', 'op.width', o.width, at)}
+      ${lenField('Height', 'op.height', o.height, at)}
+      ${o.type === 'window' ? lenField('Sill height', 'op.sill', o.sill, at) : ''}
     </div>
   </div>`;
 }
@@ -331,9 +332,9 @@ function wallSummary(room, w) {
   const tags = openingTags(room);
   return [
     `${fmtLen(w.length, P.unit)} ${unitLabel()}`,
-    +w.bulge ? '⌒ โค้ง' : '',
+    +w.bulge ? '⌒ curved' : '',
     w.openings.map(o => tags.get(o.id) || OPEN_TYPES[o.type]).join(' '),
-    w.columns?.length ? `เสา ${w.columns.length}` : '',
+    w.columns?.length ? `${w.columns.length} column${w.columns.length > 1 ? 's' : ''}` : '',
     roomPhotos(room.id, w.id).length ? `📷${roomPhotos(room.id, w.id).length}` : '',
   ].filter(Boolean).join(' · ');
 }
@@ -341,11 +342,11 @@ function wallSummary(room, w) {
 function wallCard(room, w, i) {
   const n = room.walls.length, last = i === n - 1;
   const known = !w.customTurn && TURNS.some(([v]) => v === w.turn);
-  const corners = `มุม ${cornerName(i)} → ${last ? cornerName(0) : cornerName(i + 1)}`;
+  const corners = `Corner ${cornerName(i)} → ${last ? cornerName(0) : cornerName(i + 1)}`;
   if (wallsCollapsed && selectedWall !== w.id) {
     return `<article class="card wall mini-wall" id="w-${w.id}">
       <button class="wall-head wall-open" data-act="open-wall" data-w="${w.id}">
-        <span class="badge">${i + 1}</span><b>ผนัง ${i + 1}</b><small>${esc(wallSummary(room, w))}</small><span class="chev">›</span>
+        <span class="badge">${i + 1}</span><b>Wall ${i + 1}</b><small>${esc(wallSummary(room, w))}</small><span class="chev">›</span>
       </button>
     </article>`;
   }
@@ -353,34 +354,34 @@ function wallCard(room, w, i) {
   // In the collapsed list the open wall's header folds it back up.
   return `<article class="card wall${selectedWall === w.id ? ' sel' : ''}" id="w-${w.id}">
     <div class="wall-head${wallsCollapsed ? ' wall-fold' : ''}"${wallsCollapsed ? ` data-act="close-wall" data-w="${w.id}"` : ''}>
-      <span class="badge">${i + 1}</span><b>ผนัง ${i + 1}</b>
+      <span class="badge">${i + 1}</span><b>Wall ${i + 1}</b>
       <small>${corners}</small>
       ${wallsCollapsed ? '<span class="chev open">›</span>' : ''}
-      <button class="icon" data-act="del-wall" data-w="${w.id}" aria-label="ลบผนัง">✕</button>
+      <button class="icon" data-act="del-wall" data-w="${w.id}" aria-label="Delete wall">✕</button>
     </div>
     <div class="row">
-      ${lenField('ความยาว', 'wall.length', w.length, `data-w="${w.id}"`)}
-      ${last ? '' : `<label class="field"><span>ที่มุม ${cornerName(i + 1)}</span><select data-turn="${w.id}">
+      ${lenField('Length', 'wall.length', w.length, `data-w="${w.id}"`)}
+      ${last ? '' : `<label class="field"><span>At corner ${cornerName(i + 1)}</span><select data-turn="${w.id}">
         ${TURNS.map(([v, l]) => `<option value="${v}"${known && v === w.turn ? ' selected' : ''}>${l}</option>`).join('')}
-        <option value="custom"${known ? '' : ' selected'}>กำหนดองศาเอง…</option></select></label>`}
+        <option value="custom"${known ? '' : ' selected'}>Custom angle…</option></select></label>`}
     </div>
-    ${!last && !known ? field('องศาที่เลี้ยว (+ ขวา / − ซ้าย)', 'wall.turn', w.turn, 'number', `data-w="${w.id}" inputmode="text"`) : ''}
-    ${curved ? `<div class="row bulge">${lenField('ระยะโค้ง (+ ออก / − เข้าห้อง)', 'wall.bulge', w.bulge, `data-w="${w.id}" inputmode="text"`)}
-      <button class="icon" data-act="del-bulge" data-w="${w.id}" aria-label="เลิกโค้ง">✕</button></div>
-      <p class="hint">วัดจากกึ่งกลางเส้นตรงมุมถึงมุม ไปถึงผนัง · ความยาวด้านบนคือระยะตรงมุมถึงมุม</p>` : ''}
-    ${field('หมายเหตุผนัง', 'wall.note', w.note, 'text', `data-w="${w.id}" placeholder="เช่น ผนังปูน มีปลั๊ก 2 จุด"`)}
+    ${!last && !known ? field('Turn angle (+ right / − left)', 'wall.turn', w.turn, 'number', `data-w="${w.id}" inputmode="text"`) : ''}
+    ${curved ? `<div class="row bulge">${lenField('Bulge (+ out / − into room)', 'wall.bulge', w.bulge, `data-w="${w.id}" inputmode="text"`)}
+      <button class="icon" data-act="del-bulge" data-w="${w.id}" aria-label="Make straight">✕</button></div>
+      <p class="hint">Measured from the middle of the straight corner-to-corner line out to the wall · the length above is corner to corner</p>` : ''}
+    ${field('Wall notes', 'wall.note', w.note, 'text', `data-w="${w.id}" placeholder="e.g. plaster wall, 2 sockets"`)}
     ${w.openings.map(o => openingRow(w, o)).join('')}
     ${(w.columns || []).map(c => columnRow(w, c)).join('')}
     <div class="btns">
-      <button class="btn sm" data-act="add-op" data-type="door" data-w="${w.id}">+ ประตู</button>
-      <button class="btn sm" data-act="add-op" data-type="window" data-w="${w.id}">+ หน้าต่าง</button>
-      <button class="btn sm" data-act="add-op" data-type="opening" data-w="${w.id}">+ ช่องเปิด</button>
-      <button class="btn sm" data-act="add-col" data-w="${w.id}">+ เสา</button>
+      <button class="btn sm" data-act="add-op" data-type="door" data-w="${w.id}">+ Door</button>
+      <button class="btn sm" data-act="add-op" data-type="window" data-w="${w.id}">+ Window</button>
+      <button class="btn sm" data-act="add-op" data-type="opening" data-w="${w.id}">+ Opening</button>
+      <button class="btn sm" data-act="add-col" data-w="${w.id}">+ Column</button>
     </div>
     <div class="btns">
-      ${curved ? '' : `<button class="btn sm ghost" data-act="add-bulge" data-w="${w.id}">⌒ ผนังโค้ง</button>`}
-      <button class="btn sm ghost" data-act="split-wall" data-w="${w.id}">✂ แบ่งครึ่ง</button>
-      <button class="btn sm ghost" data-act="insert-wall" data-w="${w.id}">⤵ แทรกผนังต่อจากนี้</button>
+      ${curved ? '' : `<button class="btn sm ghost" data-act="add-bulge" data-w="${w.id}">⌒ Curve wall</button>`}
+      <button class="btn sm ghost" data-act="split-wall" data-w="${w.id}">✂ Split in two</button>
+      <button class="btn sm ghost" data-act="insert-wall" data-w="${w.id}">⤵ Insert wall after</button>
     </div>
     ${photoStrip(room.id, w.id)}
   </article>`;
@@ -389,21 +390,21 @@ function wallCard(room, w, i) {
 // ---------- shapes drawn into the plan ----------
 const shapeName = sh => (sh.label ? `${sh.label} (${SHAPE_TYPES[sh.type]})` : SHAPE_TYPES[sh.type]);
 const SHAPE_FIELDS = {
-  line: [['x1', 'x เริ่ม'], ['y1', 'y เริ่ม'], ['x2', 'x ปลาย'], ['y2', 'y ปลาย']],
-  rect: [['x', 'x มุมบนซ้าย'], ['y', 'y มุมบนซ้าย'], ['w', 'กว้างแนว x'], ['h', 'ลึกแนว y']],
-  circle: [['x', 'x จุดศูนย์กลาง'], ['y', 'y จุดศูนย์กลาง'], ['d', 'เส้นผ่านศูนย์กลาง']],
+  line: [['x1', 'Start x'], ['y1', 'Start y'], ['x2', 'End x'], ['y2', 'End y']],
+  rect: [['x', 'Top-left x'], ['y', 'Top-left y'], ['w', 'Width (x)'], ['h', 'Depth (y)']],
+  circle: [['x', 'Centre x'], ['y', 'Centre y'], ['d', 'Diameter']],
 };
 
 function shapesCard(room) {
   const list = room.shapes || [];
   return `<section class="card shapes">
-    <h3>สิ่งของในแปลน <small>เคาน์เตอร์ ตู้ บิวท์อิน ฯลฯ</small></h3>
-    ${list.length ? '<p class="hint">x, y วัดจากมุม A — ไปทางขวาเป็น +x ลงล่างเป็น +y</p>' : '<p class="hint">กด "✏️ วาดในแปลน" ใต้แปลนแล้วลากนิ้ว หรือเพิ่มจากปุ่มด้านล่างแล้วกรอกขนาด</p>'}
+    <h3>Items on the plan <small>counters, cabinets, built-ins…</small></h3>
+    ${list.length ? '<p class="hint">x, y are measured from corner A — right is +x, down is +y</p>' : '<p class="hint">Tap "✏️ Edit / draw on plan" below the plan and drag, or add one below and type its size.</p>'}
     ${list.map(sh => {
       const at = `data-s="${sh.id}"`;
       return `<div class="op shape${selectedOp === sh.id ? ' picked' : ''}" id="op-${sh.id}">
-        <input data-f="shape.label" ${at} value="${esc(sh.label || '')}" placeholder="ชื่อ เช่น เคาน์เตอร์ (${SHAPE_TYPES[sh.type]})">
-        <button class="icon" data-act="del-shape" ${at} aria-label="ลบ">✕</button>
+        <input data-f="shape.label" ${at} value="${esc(sh.label || '')}" placeholder="Name, e.g. Counter (${SHAPE_TYPES[sh.type]})">
+        <button class="icon" data-act="del-shape" ${at} aria-label="Delete">✕</button>
         <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}</div>
       </div>`;
     }).join('')}
@@ -437,55 +438,57 @@ function doorQuick(room) {
   const at = `data-w="${w.id}" data-o="${o.id}"`;
   return `<div class="door-quick">
     <b>${esc(openingTags(room).get(o.id))}</b>
-    <button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'บานพับขวา' : 'บานพับซ้าย'}</button>
-    ${st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'เปิดออก' : 'เปิดเข้า'}</button>` : ''}
-    <button class="btn sm icon-btn" data-act="unpick" aria-label="ปิด">✕</button>
+    <button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>
+    ${st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
+    <button class="btn sm icon-btn" data-act="unpick" aria-label="Close">✕</button>
   </div>`;
 }
 
-const PLAN_TOOLS = { edit: '✋ ย้าย/ยืด', wall: '🧱 ผนัง', line: '╱ เส้น', rect: '▭ สี่เหลี่ยม', circle: '◯ วงกลม' };
+const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
 
 function drawBar() {
   const room = curRoom(), quick = room ? doorQuick(room) : '';
-  const undo = `<button class="btn sm icon-btn" data-act="undo" aria-label="ย้อนกลับ"${hist.past.length ? '' : ' disabled'}>↶</button>
-    <button class="btn sm icon-btn" data-act="redo" aria-label="ทำซ้ำ"${hist.future.length ? '' : ' disabled'}>↷</button>`;
-  if (!planTool) return `${quick}${undo}<button class="btn sm" data-act="tool" data-tool="edit">✏️ แก้ไข / วาดในแปลน</button>`;
+  const undo = `<button class="btn sm icon-btn" data-act="undo" aria-label="Undo"${hist.past.length ? '' : ' disabled'}>↶</button>
+    <button class="btn sm icon-btn" data-act="redo" aria-label="Redo"${hist.future.length ? '' : ' disabled'}>↷</button>`;
+  if (!planTool) return `${quick}${undo}<button class="btn sm" data-act="tool" data-tool="edit">✏️ Edit / draw on plan</button>`;
   return `${quick}${undo}${Object.entries(PLAN_TOOLS).map(([k, l]) => `<button class="btn sm${planTool === k ? ' on' : ''}" data-act="tool" data-tool="${k}">${l}</button>`).join('')}
     <button class="btn sm${snapOn ? ' on' : ''}" data-act="snap" aria-pressed="${snapOn}">🧲 Snap</button>
-    <button class="btn sm primary" data-act="tool-off">เสร็จ</button>
+    <button class="btn sm primary" data-act="tool-off">Done</button>
     <small class="tool-hint">${{
-      edit: 'ลากประตู หน้าต่าง เสา หรือสิ่งของเพื่อย้าย · แตะผนังแล้วลากจุดปลายเพื่อยืด/หมุน',
-      wall: 'แตะหรือลากไปจุดที่ผนังสิ้นสุด ผนังใหม่จะต่อจากปลายผนังล่าสุด · ลากกลับมาที่มุม A เพื่อปิดห้อง',
-    }[planTool] || 'ลากในแปลนเพื่อวาด'}</small>`;
+      edit: 'Drag doors, windows, columns or items to move them · tap a wall, then drag its end to stretch / turn it',
+      wall: 'Tap or drag to where the wall ends; it continues from the last wall · finish at corner A to close the room',
+    }[planTool] || 'Drag on the plan to draw'}</small>`;
 }
 
 function viewRoom() {
   const room = curRoom();
   $app.innerHTML = `${bar(`#/p/${P.id}`, room.name, '<button class="btn sm" data-act="export-png">PNG</button><button class="btn sm" data-act="export-dxf">DXF</button>')}
   <main>
-    <section class="plan-wrap">
+    <section class="plan-wrap${planTool ? ' full' : ''}">
       <div class="plan-box">
         <div id="plan" class="plan">${planSvg(room)}</div>
-        <button class="btn sm zoom-reset" data-act="zoom-reset" aria-label="ย่อกลับ">⤢ ย่อกลับ</button>
+        <button class="btn sm zoom-reset" data-act="zoom-reset" aria-label="Reset zoom">⤢ Reset zoom</button>
       </div>
       <div class="draw-bar">${drawBar()}</div>
       <div id="summary" class="summary">${summaryHtml(room)}</div>
     </section>
     <section class="card">
-      <div class="row">${field('ชื่อห้อง', 'room.name', room.name)}${lenField('ความสูงฝ้า', 'room.height', room.height)}</div>
-      ${field('หมายเหตุห้อง', 'room.note', room.note, 'textarea')}
-      <small>รูปภาพรวม / มุมห้อง</small>
+      <div class="row">${field('Room name', 'room.name', room.name)}${lenField('Ceiling height', 'room.height', room.height)}</div>
+      ${field('Room notes', 'room.note', room.note, 'textarea')}
+      <small>Room overview photos</small>
       ${photoStrip(room.id, null)}
     </section>
-    <p class="hint">ยืนในห้อง เริ่มที่มุม A แล้วไล่วัดผนังวนตามเข็มนาฬิกา (ห้องอยู่ทางขวามือ) ห้องสี่เหลี่ยมทั่วไปเลี้ยวขวา 90° ทุกมุม · แตะผนังในแปลนเพื่อไปที่ผนังนั้น</p>
-    <div class="walls-bar"><b>ผนัง ${room.walls.length} ด้าน</b>
-      <button class="btn sm" data-act="toggle-walls">${wallsCollapsed ? '☰ แสดงทั้งหมด' : '≡ ย่อทั้งหมด'}</button></div>
+    <p class="hint">Stand in the room, start at corner A and measure the walls clockwise (room on your right). A plain rectangle turns right 90° at every corner · tap a wall on the plan to jump to it.</p>
+    <div class="walls-bar"><b>${room.walls.length} walls</b>
+      <button class="btn sm" data-act="toggle-walls">${wallsCollapsed ? '☰ Show all' : '≡ Collapse all'}</button></div>
     <div id="walls">${room.walls.map((w, i) => wallCard(room, w, i)).join('')}</div>
-    <button class="btn primary block" data-act="add-wall">+ เพิ่มผนัง</button>
+    <button class="btn primary block" data-act="add-wall">+ Add wall</button>
     ${shapesCard(room)}
-    <button class="btn block" data-act="copy-room">⧉ คัดลอกห้องนี้</button>
-    <button class="btn ghost danger block" data-act="delete-room">ลบห้องนี้</button>
+    <button class="btn block" data-act="copy-room">⧉ Copy this room</button>
+    <button class="btn ghost danger block" data-act="delete-room">Delete this room</button>
   </main>`;
+  // Editing takes the plan full screen; Done brings the form back.
+  document.body.classList.toggle('plan-full', !!planTool);
   const box = document.getElementById('plan');
   const busy = attachPlanTools(box, {
     room,
@@ -509,9 +512,9 @@ function viewRoom() {
 
 function fmtOpening(o, wallIndex) {
   const st = openStyle(o);
-  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ${st.leaves} บาน` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' เปิดออก' : ''}${o.type === 'door' && st.style !== 'slide' && o.hinge === 'right' ? ' บานพับขวา' : ''}` : '';
+  const kind = st ? ` ${st.label}${st.leaves > 1 ? ` ×${st.leaves}` : ''}${o.type === 'door' && st.style === 'swing' && o.swing === 'out' ? ' opens out' : ''}${o.type === 'door' && st.style !== 'slide' && o.hinge === 'right' ? ' hinge right' : ''}` : '';
   const tag = openingTags(curRoomOf(o)).get(o.id);
-  return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)}${o.type === 'window' && o.sill !== undefined && o.sill !== '' ? `, สูงจากพื้น ${fmtLen(o.sill, P.unit)}` : ''})`;
+  return `${tag ? `${esc(tag)} ` : ''}${OPEN_TYPES[o.type]}${kind} ${fmtLen(o.width, P.unit)}×${fmtLen(o.height, P.unit)} ${unitLabel()} (from corner ${cornerName(wallIndex)} ${fmtLen(o.offset, P.unit)}${o.type === 'window' && o.sill !== undefined && o.sill !== '' ? `, sill ${fmtLen(o.sill, P.unit)}` : ''})`;
 }
 
 // Room holding an opening, for its tag in the report (which lists every room).
@@ -519,7 +522,7 @@ const curRoomOf = o => P.rooms.find(r => r.walls.some(w => w.openings.includes(o
 
 function fmtColumn(c, wallIndex) {
   const u = P.unit;
-  return `${c.shape === 'round' ? `เสากลม Ø${fmtLen(c.width, u)}` : `เสา ${fmtLen(c.width, u)}×${fmtLen(c.depth, u)}`} ${unitLabel()} (ห่างมุม ${cornerName(wallIndex)} ${fmtLen(c.offset, u)}${+c.gap ? `, ห่างผนัง ${fmtLen(c.gap, u)}` : ''})`;
+  return `${c.shape === 'round' ? `Round column Ø${fmtLen(c.width, u)}` : `Column ${fmtLen(c.width, u)}×${fmtLen(c.depth, u)}`} ${unitLabel()} (from corner ${cornerName(wallIndex)} ${fmtLen(c.offset, u)}${+c.gap ? `, ${fmtLen(c.gap, u)} from wall` : ''})`;
 }
 
 function roomReport(r) {
@@ -530,10 +533,10 @@ function roomReport(r) {
     <h2>${esc(r.name)}</h2>
     <div class="r-plan">${renderPlan(r, { photoCounts: photoCounts(r), unit: P.unit })}</div>
     <p class="r-sum">${parts.map(([k, v]) => `${k} <b>${v}</b>`).join(' · ')}</p>
-    ${r.shapes?.length ? `<p>สิ่งของ: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
+    ${r.shapes?.length ? `<p>Items: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
-    <table class="r-table"><thead><tr><th>ผนัง</th><th>ยาว (${unitLabel()})</th><th>ประตู / หน้าต่าง / เสา</th><th>หมายเหตุ</th></tr></thead><tbody>
-      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${+w.bulge ? `<br><small>โค้ง ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
+    <table class="r-table"><thead><tr><th>Wall</th><th>Length (${unitLabel()})</th><th>Doors / windows / columns</th><th>Notes</th></tr></thead><tbody>
+      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${+w.bulge ? `<br><small>bulge ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
     </tbody></table>
     ${list.length ? `<div class="r-photos">${list.map(p => `<figure><img data-img="${p.id}" data-size="1100" alt=""><figcaption>${esc(photoLabel(r, p))}</figcaption></figure>`).join('')}</div>` : ''}
   </section>`;
@@ -541,14 +544,14 @@ function roomReport(r) {
 
 function viewReport() {
   const total = P.rooms.reduce((s, r) => { const g = geometry(r); return s + (g.closed ? g.area : 0); }, 0);
-  const meta = [['ลูกค้า', P.client], ['สถานที่', P.site], ['วันที่สำรวจ', P.date], ['ผู้สำรวจ', P.surveyor], ['จำนวนห้อง', P.rooms.length], ['พื้นที่พื้นรวม', fmtArea(total)]]
+  const meta = [['Client', P.client], ['Site', P.site], ['Survey date', P.date], ['Surveyor', P.surveyor], ['Rooms', P.rooms.length], ['Total floor area', fmtArea(total)]]
     .filter(([, v]) => v !== '' && v != null);
-  $app.innerHTML = `${bar(`#/p/${P.id}`, 'รายงาน', '<button class="btn sm" data-act="print">พิมพ์ / PDF</button>')}
+  $app.innerHTML = `${bar(`#/p/${P.id}`, 'Report', '<button class="btn sm" data-act="print">Print / PDF</button>')}
   <main class="report">
     <h1 class="r-title">${esc(P.name)}</h1>
     <dl class="r-meta">${meta.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
     ${P.note ? `<p>${esc(P.note)}</p>` : ''}
-    ${P.rooms.map(roomReport).join('') || '<p class="empty">ยังไม่มีห้อง</p>'}
+    ${P.rooms.map(roomReport).join('') || '<p class="empty">No rooms yet</p>'}
   </main>`;
   return hydrateImages();
 }
@@ -678,24 +681,24 @@ async function uploadProject(btn) {
     const r = await fetch('api/ping', { cache: 'no-store' });
     if (!(await r.json()).ok) throw new Error();
   } catch {
-    alert('ที่อยู่นี้ไม่มีระบบอัปโหลด ต้องเปิดแอปผ่าน server ของ office (server.py) เช่นผ่าน Tailscale');
+    alert('This address has no upload service. Open the app from the office server (server.py), e.g. over Tailscale.');
     return;
   }
   const base = `${seg(P.date || today())}/${seg(P.name)}`;
   const files = [
     [`${seg(P.name)}.survey.json`, backupBlob],
-    [`${seg(P.name)} ทุกห้อง.dxf`, () => dxfBlob(P.rooms)],
+    [`${seg(P.name)} all rooms.dxf`, () => dxfBlob(P.rooms)],
   ];
   const used = new Set();
   for (const room of P.rooms) {
     let dir = seg(room.name);
     for (let k = 2; used.has(dir); k++) dir = `${seg(room.name)} (${k})`;
     used.add(dir);
-    files.push([`${dir}/แปลน.png`, () => planPng(room)], [`${dir}/แปลน.dxf`, () => dxfBlob([room])]);
+    files.push([`${dir}/plan.png`, () => planPng(room)], [`${dir}/plan.dxf`, () => dxfBlob([room])]);
     roomPhotos(room.id).forEach((p, i) => {
-      const name = `${dir}/รูป/${String(i + 1).padStart(2, '0')} ${seg(photoLabel(room, p))}`;
+      const name = `${dir}/photos/${String(i + 1).padStart(2, '0')} ${seg(photoLabel(room, p))}`;
       files.push([`${name}.jpg`, () => p.blob]);
-      if (p.annotations?.length) files.push([`${name} (มีเส้นระยะ).jpg`, async () => (await fetch(await renderAnnotated(p.blob, p.annotations, 4000))).blob()]);
+      if (p.annotations?.length) files.push([`${name} (annotated).jpg`, async () => (await fetch(await renderAnnotated(p.blob, p.annotations, 4000))).blob()]);
     });
   }
 
@@ -703,13 +706,13 @@ async function uploadProject(btn) {
   btn.disabled = true;
   try {
     for (const [k, [path, make]] of files.entries()) {
-      btn.textContent = `กำลังอัปโหลด ${k + 1}/${files.length}…`;
+      btn.textContent = `Uploading ${k + 1}/${files.length}…`;
       const res = await fetch(`api/upload?path=${encodeURIComponent(`${base}/${path}`)}`, { method: 'PUT', body: await make() });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
     }
-    alert(`อัปโหลดแล้ว ${files.length} ไฟล์\nไปที่ DATA/${base}`);
+    alert(`Uploaded ${files.length} files\nto DATA/${base}`);
   } catch (e) {
-    alert(`อัปโหลดไม่สำเร็จ (${e.message || e}) ลองใหม่อีกครั้ง ไฟล์ที่ขึ้นไปแล้วจะถูกเขียนทับ`);
+    alert(`Upload failed (${e.message || e}). Try again — files already sent are overwritten.`);
   } finally {
     btn.disabled = false;
     btn.textContent = label;
@@ -719,10 +722,10 @@ async function uploadProject(btn) {
 async function importBackup(file) {
   let data;
   try { data = JSON.parse(await file.text()); } catch { data = null; }
-  if (data?.app !== 'site-survey' || !data.project?.id) { alert('ไฟล์นี้ไม่ใช่ไฟล์สำรองของแอปนี้'); return; }
+  if (data?.app !== 'site-survey' || !data.project?.id) { alert('This is not a backup file from this app'); return; }
   const id = data.project.id;
   if (await db.getProject(id)) {
-    if (!confirm(`มีโปรเจกต์ "${data.project.name}" อยู่แล้ว เขียนทับด้วยไฟล์นี้?`)) return;
+    if (!confirm(`Project "${data.project.name}" already exists. Replace it with this file?`)) return;
     await db.deleteProject(id);
   }
   await db.putProject(data.project);
@@ -752,13 +755,13 @@ $app.addEventListener('click', async e => {
   const w = t.dataset.w && room?.walls.find(x => x.id === t.dataset.w);
   switch (t.dataset.act) {
     case 'new-project': {
-      const p = { id: uid(), name: 'โปรเจกต์ใหม่', client: '', site: '', date: today(), surveyor: '', note: '', rooms: [], createdAt: Date.now(), updatedAt: Date.now() };
+      const p = { id: uid(), name: 'New project', client: '', site: '', date: today(), surveyor: '', note: '', rooms: [], createdAt: Date.now(), updatedAt: Date.now() };
       await db.putProject(p);
       location.hash = `#/p/${p.id}`;
       break;
     }
     case 'add-room': {
-      const name = document.getElementById('nr-name').value.trim() || `ห้อง ${P.rooms.length + 1}`;
+      const name = document.getElementById('nr-name').value.trim() || `Room ${P.rooms.length + 1}`;
       const W = fromUnit(parseFloat(document.getElementById('nr-w').value), P.unit), L = fromUnit(parseFloat(document.getElementById('nr-l').value), P.unit);
       const walls = W > 0 && L > 0 ? [W, L, W, L].map(length => ({ ...newWall(), length })) : [newWall()];
       const r = { id: uid(), name, height: '', note: '', walls };
@@ -768,7 +771,7 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'delete-project':
-      if (confirm(`ลบโปรเจกต์ "${P.name}" พร้อมรูปทั้งหมด? กู้คืนไม่ได้`)) {
+      if (confirm(`Delete project "${P.name}" and all its photos? This cannot be undone.`)) {
         clearTimeout(saveTimer);
         const id = P.id;
         P = null;
@@ -779,7 +782,7 @@ $app.addEventListener('click', async e => {
     case 'backup': await backup(); break;
     case 'upload': await uploadProject(t); break;
     case 'delete-room':
-      if (confirm(`ลบห้อง "${room.name}" พร้อมรูปในห้อง?`)) {
+      if (confirm(`Delete room "${room.name}" and its photos?`)) {
         for (const p of roomPhotos(room.id)) { await db.deletePhoto(p.id); photos.delete(p.id); }
         P.rooms = P.rooms.filter(r => r !== room);
         save();
@@ -796,7 +799,7 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'del-wall':
-      if (confirm('ลบผนังนี้? รูปของผนังจะย้ายไปอยู่ภาพรวมห้อง')) {
+      if (confirm('Delete this wall? Its photos move to the room overview.')) {
         room.walls = room.walls.filter(x => x !== w);
         for (const p of roomPhotos(room.id, w.id)) { p.wallId = null; await db.putPhoto(p); }
         save();
@@ -818,7 +821,7 @@ $app.addEventListener('click', async e => {
       const ids = new Map(), fresh = id => (id ? ids.get(id) || ids.set(id, uid()).get(id) : id);
       const copy = JSON.parse(JSON.stringify(room));
       copy.id = uid();
-      copy.name = `${room.name} (สำเนา)`;
+      copy.name = `${room.name} (copy)`;
       for (const w of copy.walls) {
         w.id = fresh(w.id);
         for (const o of w.openings || []) { o.id = fresh(o.id); if (o.ref) o.ref = fresh(o.ref); }
@@ -885,7 +888,7 @@ $app.addEventListener('click', async e => {
       break;
     }
     case 'split-wall': {
-      if (+w.bulge) { alert('ผนังโค้งแบ่งไม่ได้ ให้เลิกโค้งก่อน'); break; }
+      if (+w.bulge) { alert('A curved wall can\'t be split — make it straight first'); break; }
       // Two straight halves; doors, windows and columns past the middle move to the second half.
       const L = +w.length || 0, h = Math.round(L * 5) / 10;
       const second = { ...newWall(), length: Math.round((L - h) * 10) / 10, turn: w.turn, customTurn: w.customTurn };
