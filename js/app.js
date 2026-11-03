@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.19';
+const APP_VERSION = '1.0.20';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -17,6 +17,7 @@ const fileSafe = s => String(s || 'plan').replace(/[\\/:*?"<>|]+/g, '_').trim();
 
 const TURNS = [[90, 'Turn right 90°'], [-90, 'Turn left 90°'], [45, 'Turn right 45°'], [-45, 'Turn left 45°'], [0, 'Straight on (no turn)']];
 const OPEN_TYPES = { door: 'Door', window: 'Window', opening: 'Opening' };
+const WALL_KINDS = { '': 'Wall', glass: 'Glass wall' };
 const OPEN_DEFAULTS = {
   door: { offset: 30, width: 80, height: 200, ...OPEN_STYLE_DEFAULTS.door },
   window: { offset: 50, width: 120, height: 110, sill: 90, ...OPEN_STYLE_DEFAULTS.window },
@@ -27,7 +28,7 @@ let photos = new Map();   // photo id → record for P
 let view = { name: 'home' };
 let selectedWall = null;
 let selectedOp = null;    // door/window/column/shape picked in the plan, highlighted in the form
-let planTool = null;      // 'edit' | 'wall' | 'line' | 'rect' | 'circle' while working on the plan
+let planTool = null;      // 'edit' | 'wall' | 'glass' | 'line' | 'rect' | 'circle' while working on the plan
 let preview = {};         // { draft, draftWall, snapAt } shown while a plan drag is under way
 let snapOn = true;
 try { snapOn = localStorage.getItem('plan-snap') !== '0'; } catch { /* storage unavailable */ }
@@ -256,6 +257,7 @@ function summaryParts(room) {
   const openArea = room.walls.flatMap(w => w.openings).reduce((s, o) => s + (+o.width || 0) * (+o.height || 0), 0);
   const parts = [['Floor area', g.closed ? fmtArea(g.area) : '–'], ['Perimeter', `${fmtM(g.perimeter)} m`]];
   if (h) parts.push(['Height', `${fmtM(h)} m`], ['Net wall area', fmtArea(Math.max(0, g.wallLen * h - openArea))]);
+  if (h && g.glassLen) parts.push(['Glass wall area', fmtArea(g.glassLen * h)]);
   return { g, parts };
 }
 function summaryHtml(room) {
@@ -286,7 +288,7 @@ function kindRow(o, at, autoTag) {
   return `<div class="op-kind">
     <input class="op-tag" data-f="op.tag" ${at} value="${esc(o.tag || '')}" placeholder="${esc(autoTag)}" aria-label="Tag, e.g. D1">
     <select data-f="op.style" ${at} aria-label="Type">${Object.entries(OPEN_STYLES[o.type]).map(([k, l]) => opt(k, l, k === st.style)).join('')}</select>
-    <select data-f="op.leaves" ${at} aria-label="Leaves">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} leaf${i ? 's' : ''}`, i + 1 === st.leaves)).join('')}</select>
+    ${st.style === 'open' ? '' : `<select data-f="op.leaves" ${at} aria-label="Leaves">${Array.from({ length: MAX_LEAVES[o.type] }, (_, i) => opt(i + 1, `${i + 1} leaf${i ? 's' : ''}`, i + 1 === st.leaves)).join('')}</select>`}
     ${o.type === 'door' && st.style === 'swing' ? `<select data-f="op.swing" ${at} aria-label="Opens">${opt('in', 'Opens in', o.swing !== 'out')}${opt('out', 'Opens out', o.swing === 'out')}</select>` : ''}
     ${o.type === 'door' && st.style !== 'slide' ? `<select data-f="op.hinge" ${at} aria-label="Hinge side">${opt('left', 'Hinge left', o.hinge !== 'right')}${opt('right', 'Hinge right', o.hinge === 'right')}</select>` : ''}
   </div>`;
@@ -347,6 +349,7 @@ function wallSummary(room, w) {
   return [
     `${fmtLen(w.length, P.unit)} ${unitLabel()}`,
     w.gap ? '┄ gap (wall deleted)' : +w.bulge ? '⌒ curved' : '',
+    !w.gap && w.kind === 'glass' ? '🪟 glass' : '',
     w.openings.map(o => tags.get(o.id) || OPEN_TYPES[o.type]).join(' '),
     w.columns?.length ? `${w.columns.length} column${w.columns.length > 1 ? 's' : ''}` : '',
     roomPhotos(room.id, w.id).length ? `📷${roomPhotos(room.id, w.id).length}` : '',
@@ -407,12 +410,14 @@ function wallCard(room, w, i) {
       <button class="icon" data-act="del-bulge" data-w="${w.id}" aria-label="Make straight">✕</button></div>
       <p class="hint">Bulge is measured from the middle of the straight corner-to-corner line out to the wall · or type the radius · the length above is corner to corner</p>
       <div class="btns"><button class="btn sm ghost" data-act="half-circle" data-w="${w.id}">◐ Half circle</button></div>` : ''}
+    <label class="field"><span>Wall type</span><select data-f="wall.kind" data-w="${w.id}">${Object.entries(WALL_KINDS).map(([k, l]) => `<option value="${k}"${(w.kind || '') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     ${field('Wall notes', 'wall.note', w.note, 'text', `data-w="${w.id}" placeholder="e.g. plaster wall, 2 sockets"`)}
     ${w.openings.map(o => openingRow(w, o)).join('')}
     ${(w.columns || []).map(c => columnRow(w, c)).join('')}
     <div class="btns">
       <button class="btn sm" data-act="add-op" data-type="door" data-w="${w.id}">+ Door</button>
       <button class="btn sm" data-act="add-op" data-type="window" data-w="${w.id}">+ Window</button>
+      <button class="btn sm" data-act="add-op" data-type="window" data-style="open" data-w="${w.id}">+ Window opening</button>
       <button class="btn sm" data-act="add-op" data-type="opening" data-w="${w.id}">+ Opening</button>
       <button class="btn sm" data-act="add-col" data-w="${w.id}">+ Column</button>
     </div>
@@ -492,7 +497,7 @@ function pickedItem(room) {
   const sh = room.shapes?.find(x => x.id === selectedOp);
   if (sh) return { kind: 'shape', sh, name: shapeName(sh) };
   const i = planTool ? room.walls.findIndex(x => x.id === selectedWall) : -1;
-  if (i >= 0) return { kind: 'wall', w: room.walls[i], name: room.walls[i].gap ? `Gap (wall ${i + 1})` : `Wall ${i + 1}` };
+  if (i >= 0) return { kind: 'wall', w: room.walls[i], name: room.walls[i].gap ? `Gap (wall ${i + 1})` : `${room.walls[i].kind === 'glass' ? 'Glass wall' : 'Wall'} ${i + 1}` };
   return null;
 }
 
@@ -508,12 +513,13 @@ function pickQuick(room) {
     ${st && st.style !== 'slide' ? `<button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>` : ''}
     ${st && st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
     ${it.kind === 'wall' && it.w.gap ? `<button class="btn sm" data-act="fill-gap" data-w="${it.w.id}">↺ Put a wall here</button>` : ''}
+    ${it.kind === 'wall' && !it.w.gap ? `<button class="btn sm" data-act="wall-kind" data-w="${it.w.id}">${it.w.kind === 'glass' ? '🧱 Make solid wall' : '🪟 Make glass wall'}</button>` : ''}
     <button class="btn sm danger" data-act="del-picked">🗑 ${it.kind === 'wall' && it.w.gap ? 'Remove gap' : 'Delete'}</button>
     <button class="btn sm icon-btn" data-act="${it.kind === 'wall' ? 'close-wall' : 'unpick'}" aria-label="Close">✕</button>
   </div>`;
 }
 
-const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
+const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', glass: '🪟 Glass wall', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
 
 function drawBar() {
   const room = curRoom(), quick = room ? pickQuick(room) : '';
@@ -526,6 +532,7 @@ function drawBar() {
     <small class="tool-hint">${{
       edit: 'Drag doors, windows, openings, columns or items to move them · tap one, then drag its ends to resize · tap a wall, then drag an end to stretch / turn it or the middle to move it',
       wall: 'Tap or drag to where the wall ends; it continues from the last wall · finish at corner A to close the room',
+      glass: 'Like 🧱 Wall, but the new wall is glass · any wall can be switched later: tap it in ✋ Move / resize',
     }[planTool] || 'Drag on the plan to draw'}</small>`;
 }
 
@@ -605,7 +612,7 @@ function roomReport(r) {
     ${r.shapes?.length ? `<p>Items: ${r.shapes.map(sh => esc(shapeName(sh)) + (sh.type === 'rect' ? ` ${fmtLen(sh.w, P.unit)}×${fmtLen(sh.h, P.unit)}` : sh.type === 'circle' ? ` Ø${fmtLen(sh.d, P.unit)}` : '')).join(', ')} ${unitLabel()}</p>` : ''}
     ${r.note ? `<p>${esc(r.note)}</p>` : ''}
     <table class="r-table"><thead><tr><th>Wall</th><th>Length (${unitLabel()})</th><th>Doors / windows / columns</th><th>Notes</th></tr></thead><tbody>
-      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${w.gap ? '<br><small>gap (wall deleted)</small>' : +w.bulge ? `<br><small>bulge ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
+      ${r.walls.map((w, i) => `<tr><td>${i + 1} (${cornerName(i)}→${cornerName((i + 1) % n)})</td><td>${fmtLen(w.length, P.unit)}${w.gap ? '<br><small>gap (wall deleted)</small>' : ''}${!w.gap && w.kind === 'glass' ? '<br><small>glass wall</small>' : ''}${w.gap ? '' : +w.bulge ? `<br><small>bulge ${fmtLen(w.bulge, P.unit)}</small>` : ''}</td><td>${[...w.openings.map(o => fmtOpening(o, i)), ...(w.columns || []).map(c => fmtColumn(c, i))].join('<br>') || '–'}</td><td>${esc(w.note)}</td></tr>`).join('')}
     </tbody></table>
     ${list.length ? `<div class="r-photos">${list.map(p => `<figure><img data-img="${p.id}" data-size="1100" alt=""><figcaption>${esc(photoLabel(r, p))}</figcaption></figure>`).join('')}</div>` : ''}
   </section>`;
@@ -919,10 +926,11 @@ $app.addEventListener('click', async e => {
       if (await deleteWall(room, w)) { save(); rerender(); }
       break;
     case 'fill-gap': delete w.gap; save(); rerender(); break;
+    case 'wall-kind': if (w.kind === 'glass') delete w.kind; else w.kind = 'glass'; save(); rerender(); break;
     case 'add-op': {
       // A second door/window is measured on from the last one by default.
       const last = w.openings.at(-1);
-      w.openings.push({ id: uid(), type: t.dataset.type, offset: 30, width: 80, height: 200, ...OPEN_DEFAULTS[t.dataset.type], ...(last ? { ref: last.id, refGap: 50 } : {}) });
+      w.openings.push({ id: uid(), type: t.dataset.type, offset: 30, width: 80, height: 200, ...OPEN_DEFAULTS[t.dataset.type], ...(t.dataset.style ? { style: t.dataset.style } : {}), ...(last ? { ref: last.id, refGap: 50 } : {}) });
       resolveRefs(w);
       save();
       rerender();
@@ -1079,7 +1087,7 @@ $app.addEventListener('input', e => {
   }
   save(`${key}:${el.dataset.w || ''}:${el.dataset.o || el.dataset.c || el.dataset.s || ''}`);
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
-  if ((scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();
+  if ((scope === 'wall' && prop === 'kind') || (scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();
   else if (view.name === 'room') refreshPlan();
 });
 

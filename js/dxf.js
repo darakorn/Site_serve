@@ -10,7 +10,7 @@
 import { geometry, openingShapes, openingTags, chainBreaks, columnShape, segPoint, shapePoints, fmtLen, fmtArea } from './plan.js';
 
 const LAYERS = [
-  ['Wall', 7], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
+  ['Wall', 7], ['Glass', 4], ['Door', 3], ['Door-Symbol', 3], ['Window', 5], ['Window-Symbol', 5],
   ['Opening', 8], ['Column', 6], ['Furniture', 4], ['Dim', 1], ['Text', 2],
 ];
 const DIM_OFF = 300, DIM_ROW = 300, TICK = 60, TXT = 120, NAME_TXT = 250, ROOM_GAP = 1500;
@@ -116,14 +116,14 @@ function drawRoom(w, room, ox, oy, unit, t) {
 
     // Wall pieces between openings, each a closed outline through the wall thickness.
     // Curved walls follow their arc on both faces.
-    const qa = outerCorner('start', sg), qb = outerCorner('end', sg);
+    const qa = outerCorner('start', sg), qb = outerCorner('end', sg), layer = sg.glass ? 'Glass' : 'Wall';
     const piece = (s0, s1, z = 0, h = height) => {
       if (s1 - s0 < 0.5) return;
       const e0 = at(sg, s0), e1 = at(sg, s1);
       const i0 = e0.p, i1 = e1.p;
       const o0 = s0 <= 0 ? qa : add(i0, e0.o, t), o1 = s1 >= len ? qb : add(i1, e1.o, t);
-      if (!C) return w.poly('Wall', [i0, i1, o1, o0], h, z);
-      w.poly('Wall', [{ ...i0, b: Math.tan(turn(C, i0, i1) / 4) }, i1, { ...o1, b: Math.tan(turn(C, o1, o0) / 4) }, o0], h, z);
+      if (!C) return w.poly(layer, [i0, i1, o1, o0], h, z);
+      w.poly(layer, [{ ...i0, b: Math.tan(turn(C, i0, i1) / 4) }, i1, { ...o1, b: Math.tan(turn(C, o1, o0) / 4) }, o0], h, z);
     };
     let pos = 0;
     for (const { op, off, w: ow } of ops) {

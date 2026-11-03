@@ -7,6 +7,7 @@ const VW = 400;
 const INK = '#222';
 const DIM = '#777';
 const ACC = '#1f6f5c';
+const GLASS = '#d6ecf8', GLASS_LINE = '#2f86c0';
 const RED = '#d93025';
 const FONT = "'Sarabun','Noto Sans Thai','Leelawadee UI',system-ui,sans-serif";
 
@@ -34,7 +35,7 @@ export const normAngle = a => Math.round(((((a % 360) + 540) % 360) - 180) * 10)
 
 export const OPEN_STYLES = {
   door: { swing: 'Hinged', slide: 'Sliding', double: 'Double-acting' },
-  window: { casement: 'Casement', slide: 'Sliding', awning: 'Awning' },
+  window: { casement: 'Casement', slide: 'Sliding', awning: 'Awning', open: 'Plain opening (no sash)' },
 };
 export const OPEN_STYLE_DEFAULTS = { door: { style: 'swing', leaves: 1 }, window: { style: 'slide', leaves: 2 } };
 export const MAX_LEAVES = { door: 4, window: 6 };
@@ -44,7 +45,7 @@ export function openStyle(o) {
   const d = OPEN_STYLE_DEFAULTS[o.type];
   if (!d) return null;
   const style = OPEN_STYLES[o.type][o.style] ? o.style : d.style;
-  const leaves = Math.min(MAX_LEAVES[o.type], Math.max(1, parseInt(o.leaves) || d.leaves));
+  const leaves = style === 'open' ? 1 : Math.min(MAX_LEAVES[o.type], Math.max(1, parseInt(o.leaves) || d.leaves));
   return { style, leaves, label: OPEN_STYLES[o.type][style] };
 }
 
@@ -91,9 +92,12 @@ export function openingShapes(o, a, u, n, w, t, mid = 0) {
     return out;
   }
 
-  // Window frame on both faces with jamb ticks, then the sash symbol.
-  for (const k of [-t / 2, t / 2]) ln(P(0, mid + k), P(w, mid + k));
+  // Window frame on both faces with jamb ticks, then the sash symbol. A plain window opening is
+  // only the hole: jambs, and the sill dashed across it.
+  const plain = style === 'open';
+  for (const k of [-t / 2, t / 2]) ln(P(0, mid + k), P(w, mid + k), plain);
   for (const x of [0, w]) ln(P(x, mid - t / 2), P(x, mid + t / 2));
+  if (plain) return out;
   if (style === 'slide') {
     panels(t / 6);
     return out;
@@ -204,7 +208,7 @@ export function geometry(room) {
   }
   const cw = a2 >= 0; // clockwise on screen (y down) → room is on the right of each wall
   const inwardOf = inwardFor(cw);
-  let area = Math.abs(a2) / 2, perimeter = 0, gaps = 0;
+  let area = Math.abs(a2) / 2, perimeter = 0, gaps = 0, glass = 0;
 
   // Curved walls: `bulge` is how far the middle of the wall bows out from the straight line
   // between its corners (+ away from the room, − into it), up to a half circle.
@@ -213,33 +217,35 @@ export function geometry(room) {
     sg.inward = inwardOf(sg.u);
     // A deleted wall stays in the chain as a straight gap, so the walls after it keep their place.
     sg.gap = !!sg.wall.gap;
+    sg.glass = !sg.gap && sg.wall.kind === 'glass';
     if (sg.gap) gaps += sg.len;
     const h = sg.gap ? 0 : clamp(+sg.wall.bulge || 0, -sg.len / 2, sg.len / 2);
-    if (Math.abs(h) < 0.5 || !sg.len) { perimeter += sg.len; continue; }
+    if (Math.abs(h) < 0.5 || !sg.len) { perimeter += sg.len; if (sg.glass) glass += sg.len; continue; }
     const c = sg.len, r = (c * c / 4 + h * h) / (2 * Math.abs(h));
     const out = { x: -sg.inward.x, y: -sg.inward.y }, sign = Math.sign(h);
     const m = mid(sg.p0, sg.p1);
     sg.arc = { h, r, sign, out, apex: add(m, out, h), center: add(m, out, h - sign * r) };
     const half = Math.asin(Math.min(1, c / (2 * r)));
     perimeter += 2 * r * half;
+    if (sg.glass) glass += 2 * r * half;
     // Circular segment between chord and arc: added when the wall bows out, removed when it bows in.
     area += sign * (r * r * half - (c / 2) * (r - Math.abs(h)));
   }
   // Corners plus the tip of each curved wall: what the plan has to fit.
   const extent = [...pts, ...segs.filter(sg => sg.arc).map(sg => sg.arc.apex)];
-  return { pts, segs, end, gap, wallLen: perimeter - gaps, closed: gap < 1 && (segs.length >= 3 || (segs.length === 2 && segs.every(sg => sg.arc))), area, perimeter, cw, extent };
+  return { pts, segs, end, gap, wallLen: perimeter - gaps - glass, glassLen: glass, closed: gap < 1 && (segs.length >= 3 || (segs.length === 2 && segs.every(sg => sg.arc))), area, perimeter, cw, extent };
 }
 
-// Unbroken stretches of wall between gaps. A closed room with no gap is one loop.
+// Unbroken stretches of solid wall between gaps and glass walls. A closed room with no gap is one loop.
 export function wallRuns(g) {
-  const segs = g.segs, n = segs.length, first = segs.findIndex(sg => sg.gap);
+  const segs = g.segs, n = segs.length, first = segs.findIndex(sg => sg.gap || sg.glass);
   if (first < 0) return n ? [{ segs, loop: g.closed }] : [];
   // In a closed room a run may wrap past the last wall to the first, so start after a gap.
   const order = g.closed ? [...segs.slice(first + 1), ...segs.slice(0, first + 1)] : segs;
   const runs = [];
   let cur = [];
   for (const sg of order) {
-    if (sg.gap) { if (cur.length) runs.push({ segs: cur, loop: false }); cur = []; } else cur.push(sg);
+    if (sg.gap || sg.glass) { if (cur.length) runs.push({ segs: cur, loop: false }); cur = []; } else cur.push(sg);
   }
   if (cur.length) runs.push({ segs: cur, loop: false });
   return runs;
@@ -324,6 +330,14 @@ export function renderPlan(room, opt = {}) {
   // Walls in runs between gaps; a gap (a deleted wall) is a dashed line waiting to be filled in.
   for (const run of wallRuns(g)) out.push(`<path d="${wallPath(g, X, run.segs, run.loop)}" fill="none" stroke="${INK}" stroke-width="${f(T)}" stroke-linejoin="miter" stroke-linecap="square"/>`);
   for (const sg of g.segs.filter(x => x.gap)) out.push(line(X(sg.p0), X(sg.p1), `stroke="${DIM}" stroke-width="${f(Z(mini ? 1 : 1.6))}" ${dash(7, 5)}`));
+  // Glass walls: a pale blue band through the wall thickness, outlined, with the glass line along
+  // the middle. They reach into the corners like the solid walls do.
+  for (const sg of g.segs.filter(x => x.glass)) {
+    const d = wallPath(g, X, [sg], false), edge = Z(mini ? 0.8 : 1.2);
+    out.push(`<path d="${d}" fill="none" stroke="${GLASS_LINE}" stroke-width="${f(T + edge)}" stroke-linecap="square"/>`);
+    out.push(`<path d="${d}" fill="none" stroke="${GLASS}" stroke-width="${f(T - edge)}" stroke-linecap="square"/>`);
+    out.push(`<path d="${d}" fill="none" stroke="${GLASS_LINE}" stroke-width="${f(Z(mini ? 0.8 : 1.2))}"/>`);
+  }
 
   const sel = g.segs.find(sg => sg.wall.id === opt.selected);
   if (sel && !mini) out.push(`<path d="${wallPath(g, X, [sel], false)}" fill="none" stroke="${ACC}" stroke-width="${f(sel.gap ? Z(2.5) : T)}" stroke-linecap="square"${sel.gap ? ' ' + dash(7, 5) : ''}/>`);
