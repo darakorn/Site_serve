@@ -7,7 +7,7 @@ import { attachPlanTools } from './tools.js';
 import { hasCamera, takePhoto } from './camera.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.28';
+const APP_VERSION = '1.0.29';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -359,24 +359,24 @@ function wallSummary(room, w) {
 }
 
 function wallCard(room, w, i) {
-  const n = room.walls.length, last = i === n - 1;
+  const n = room.walls.length, last = i === n - 1, no = i + 1;
   const known = !w.customTurn && TURNS.some(([v]) => v === w.turn);
   const corners = `Corner ${cornerName(i)} → ${last ? cornerName(0) : cornerName(i + 1)}`;
   if (wallsCollapsed && selectedWall !== w.id) {
     return `<article class="card wall mini-wall" id="w-${w.id}">
       <button class="wall-head wall-open" data-act="open-wall" data-w="${w.id}">
-        <span class="badge">${i + 1}</span><b>Wall ${i + 1}</b><small>${esc(wallSummary(room, w))}</small><span class="chev">›</span>
+        <span class="badge">${no}</span><b>Wall ${no}</b><small>${esc(wallSummary(room, w))}</small><span class="chev">›</span>
       </button>
     </article>`;
   }
   if (w.gap) {
     return `<article class="card wall gap-wall${selectedWall === w.id ? ' sel' : ''}" id="w-${w.id}">
     <div class="wall-head${wallsCollapsed ? ' wall-fold' : ''}"${wallsCollapsed ? ` data-act="close-wall" data-w="${w.id}"` : ''}>
-      <span class="badge">${i + 1}</span><b>Gap · wall ${i + 1} deleted</b>
+      <span class="badge">${no}</span><b>Gap · wall ${no} deleted</b>
       <small>${corners}</small>
       ${wallsCollapsed ? '<span class="chev open">›</span>' : ''}
     </div>
-    <p class="hint">The walls around it stay where they are. Put a wall back here, or split the gap to fill part of it.${gapRemovable(room, w) ? ' At the end of the walls it can also be removed.' : ''}</p>
+    <p class="hint">The walls around it stay where they are. Put a wall back here, or split the gap to fill part of it.${gapHint(room, w)}</p>
     <div class="row">
       ${lenField('Length', 'wall.length', w.length, `data-w="${w.id}"`)}
       ${last ? '' : `<label class="field"><span>At corner ${cornerName(i + 1)}</span><select data-turn="${w.id}">
@@ -387,7 +387,7 @@ function wallCard(room, w, i) {
     <div class="btns">
       <button class="btn sm" data-act="fill-gap" data-w="${w.id}">↺ Put a wall here</button>
       <button class="btn sm ghost" data-act="split-wall" data-w="${w.id}">✂ Split in two</button>
-      ${gapRemovable(room, w) ? `<button class="btn sm ghost danger" data-act="del-wall" data-w="${w.id}">Remove gap</button>` : ''}
+      <button class="btn sm ghost danger" data-act="del-wall" data-w="${w.id}">Remove gap</button>
     </div>
   </article>`;
   }
@@ -395,7 +395,7 @@ function wallCard(room, w, i) {
   // In the collapsed list the open wall's header folds it back up.
   return `<article class="card wall${selectedWall === w.id ? ' sel' : ''}" id="w-${w.id}">
     <div class="wall-head${wallsCollapsed ? ' wall-fold' : ''}"${wallsCollapsed ? ` data-act="close-wall" data-w="${w.id}"` : ''}>
-      <span class="badge">${i + 1}</span><b>Wall ${i + 1}</b>
+      <span class="badge">${no}</span><b>Wall ${no}</b>
       <small>${corners}</small>
       ${wallsCollapsed ? '<span class="chev open">›</span>' : ''}
       <button class="icon" data-act="del-wall" data-w="${w.id}" aria-label="Delete wall">✕</button>
@@ -442,6 +442,10 @@ const shapeName = sh => {
   const type = sh.type === 'wall' ? `${SHAPE_TYPES.wall} ${freeWallNo(sh)}` : SHAPE_TYPES[sh.type];
   return sh.label ? `${sh.label} (${type})` : type;
 };
+// A free wall's or line's length and direction (degrees clockwise from +x on the plan). Changing
+// either keeps its start where it is.
+const segLen = sh => Math.hypot(+sh.x2 - +sh.x1, +sh.y2 - +sh.y1);
+const segAngle = sh => normAngle((Math.atan2(+sh.y2 - +sh.y1, +sh.x2 - +sh.x1) * 180) / Math.PI);
 const SHAPE_FIELDS = {
   wall: [['x1', 'Start x'], ['y1', 'Start y'], ['x2', 'End x'], ['y2', 'End y']],
   line: [['x1', 'Start x'], ['y1', 'Start y'], ['x2', 'End x'], ['y2', 'End y']],
@@ -453,13 +457,15 @@ function shapesCard(room) {
   const list = room.shapes || [];
   return `<section class="card shapes">
     <h3>Items on the plan <small>counters, cabinets, built-ins, free-standing columns…</small></h3>
-    ${list.length || room.columns?.length ? '<p class="hint">x, y are measured from corner A — right is +x, down is +y</p>' : '<p class="hint">Tap "✏️ Edit / draw on plan" below the plan and drag, or add one below and type its size.</p>'}
+    ${list.length || room.columns?.length ? '<p class="hint">x, y are measured from corner A — right is +x, down is +y; angles turn clockwise from +x</p>' : '<p class="hint">Tap "✏️ Edit / draw on plan" below the plan and drag, or add one below and type its size.</p>'}
     ${list.map(sh => {
       const at = `data-s="${sh.id}"`;
       return `<div class="op shape${selectedOp === sh.id ? ' picked' : ''}" id="op-${sh.id}">
         <input data-f="shape.label" ${at} value="${esc(sh.label || '')}" placeholder="${sh.type === 'wall' ? `Name, e.g. Partition (${shapeName(sh)})` : `Name, e.g. Counter (${SHAPE_TYPES[sh.type]})`}">
         <button class="icon" data-act="del-shape" ${at} aria-label="Delete">✕</button>
-        <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}${sh.type === 'rect' ? field('Rotation (°)', 'shape.rot', sh.rot ?? '', 'number', `${at} inputmode="text" placeholder="0"`) : ''}${sh.type === 'wall' ? `
+        <div class="col-f">${SHAPE_FIELDS[sh.type].map(([k, l]) => lenField(l, `shape.${k}`, sh[k], `${at} inputmode="text"`)).join('')}${segShape(sh) ? `
+          ${lenField('Length', 'shape.len', roundLen(segLen(sh)), `${at} inputmode="text"`)}
+          ${field('Angle (°)', 'shape.angle', segAngle(sh), 'number', `${at} inputmode="text"`)}` : ''}${sh.type === 'rect' ? field('Rotation (°)', 'shape.rot', sh.rot ?? '', 'number', `${at} inputmode="text" placeholder="0"`) : ''}${sh.type === 'wall' ? `
           <label class="field"><span>Wall type</span><select data-f="shape.kind" ${at}>${Object.entries(WALL_KINDS).map(([k, l]) => `<option value="${k}"${(sh.kind || '') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
           ${lenField('Thickness', 'shape.thickness', sh.thickness, `${at} placeholder="${esc(fmtLen(P.wallThickness ?? WALL_T, P.unit))} (default)"`)}` : ''}</div>
         ${sh.type === 'wall' ? `${(sh.openings || []).map(o => openingRow(sh, o)).join('')}
@@ -508,7 +514,10 @@ function handlesFor(room) {
       out.push({ ...turnHandle({ x: (+sh.x || 0) + (+sh.w || 0) / 2, y: (+sh.y || 0) + (+sh.h || 0) / 2 }, +sh.h || 0, sh.rot), id: 'rot', for: sh.id, solid: true });
     }
     else if (sh.type === 'circle') out.push({ x: (+sh.x || 0) + (+sh.d || 0) / 2, y: +sh.y || 0, id: 'circle-r', for: sh.id });
-    else out.push({ ...a, id: 'line-1', for: sh.id }, { ...b, id: 'line-2', for: sh.id });
+    else {
+      out.push({ ...a, id: 'line-1', for: sh.id }, { ...b, id: 'line-2', for: sh.id });
+      if (segLen(sh)) out.push({ ...turnHandle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, +sh.thickness || P.wallThickness || WALL_T, segAngle(sh)), id: 'rot', for: sh.id, solid: true });
+    }
   }
   const fc = room.columns?.find(x => x.id === selectedOp);
   if (fc) return fc.shape === 'round' ? [] : [{ ...turnHandle({ x: +fc.x || 0, y: +fc.y || 0 }, +fc.depth || 0, fc.rot), id: 'rot', for: fc.id, solid: true }];
@@ -581,9 +590,10 @@ function pickQuick(room) {
     ${it.kind === 'shape' && it.sh.type === 'wall' ? Object.entries(KIND_BUTTONS).map(([k, l]) => `<button class="btn sm${(it.sh.kind || '') === k ? ' on' : ''}" data-act="shape-kind" data-kind="${k}">${l}</button>`).join('') : ''}
     ${it.kind === 'shape' && segShape(it.sh) ? offsetControls(it.sh) : ''}
     ${(it.kind === 'fcol' && it.c.shape !== 'round') || (it.kind === 'shape' && it.sh.type === 'rect') ? `<button class="btn sm" data-act="rot90">⟳ 90°${+(it.c || it.sh).rot ? ` (now ${+(it.c || it.sh).rot}°)` : ''}</button>` : ''}
+    ${it.kind === 'shape' && segShape(it.sh) ? `<button class="btn sm" data-act="rot90">⟳ 90° (now ${segAngle(it.sh)}°)</button>` : ''}
     ${it.kind === 'wall' && it.w.gap ? `<button class="btn sm" data-act="fill-gap" data-w="${it.w.id}">↺ Put a wall here</button>` : ''}
     ${it.kind === 'wall' && !it.w.gap ? Object.entries(KIND_BUTTONS).map(([k, l]) => `<button class="btn sm${(it.w.kind || '') === k ? ' on' : ''}" data-act="wall-kind" data-kind="${k}" data-w="${it.w.id}">${l}</button>`).join('') : ''}
-    ${it.kind === 'wall' && it.w.gap && !gapRemovable(room, it.w) ? '' : `<button class="btn sm danger" data-act="del-picked">🗑 ${it.kind === 'wall' && it.w.gap ? 'Remove gap' : 'Delete'}</button>`}
+    ${`<button class="btn sm danger" data-act="del-picked">🗑 ${it.kind === 'wall' && it.w.gap ? 'Remove gap' : 'Delete'}</button>`}
     <button class="btn sm icon-btn" data-act="${it.kind === 'wall' ? 'close-wall' : 'unpick'}" aria-label="Close">✕</button>
   </div>`;
 }
@@ -601,11 +611,11 @@ function drawBar() {
     <button class="btn sm primary" data-act="tool-off">Done</button>
     <small class="tool-hint">${{
       edit: 'Drag doors, windows, openings, columns or items to move them · tap one, then drag its ends to resize · tap a wall, then drag an end to stretch / turn it or the middle to move it',
-      wall: 'Tap or drag to where the wall ends; it continues from the last wall · finish at corner A to close the room',
+      wall: 'Tap or drag to where the wall ends; it continues from whichever end of the walls is nearer — the last wall, or before corner A · finish on the other end to close the room',
       light: 'Like 🧱 Wall, but the new wall is a light wall (drywall) · switch any wall later: tap it in ✋ Move / resize',
       glass: 'Like 🧱 Wall, but the new wall is glass · switch any wall later: tap it in ✋ Move / resize',
       column: 'Tap where a free-standing column goes · drag it, or type its size, afterwards · it shows how far it stands off the walls',
-      fwall: 'Drag a wall anywhere, e.g. a partition in the middle of the room · it isn\'t part of the room outline · tap it in ✋ to move it, drag its ends, change its type or thickness',
+      fwall: 'Drag a wall anywhere, e.g. a partition in the middle of the room · it isn\'t part of the room outline · tap it in ✋ to move it, drag its ends, turn it, change its type, thickness or angle',
       dim: 'Drag from one point to another for a dimension · it snaps to corners, walls, columns and items · tap one in ✋ to move its ends or delete it',
     }[planTool] || 'Drag on the plan to draw'}</small>`;
 }
@@ -731,32 +741,83 @@ async function selectWall(id, scroll, opId = null, soft = false) {
 }
 
 // Deleting a wall leaves a gap in its place (a dashed line), so the walls after it don't move.
-// Deleting the gap then takes it out of the chain: the walls after it move up to join on.
-// A gap can only go where nothing else moves: at the end of the walls, or at the start, where the
-// plan's starting corner A moves on to the next corner instead.
-const gapRemovable = (room, w) => w.gap && [0, room.walls.length - 1].includes(room.walls.indexOf(w));
+// Any gap can then be removed, together with the gaps (and walls of no length) next to it:
+//   at the end of the walls — they come out of the chain; at the start, the plan's starting
+//     corner A moves on to the first wall after them;
+//   in between, several — they join into one straight gap from the last wall before them to the
+//     first wall after, ready for a new wall; the corners between them go;
+//   in between, just one — it comes out and the walls after it move up to join on (asked first).
+const nothing = w => w.gap || !(+w.length > 0.5);
+const gapHint = (room, w) => {
+  const run = gapRun(room, w), k = room.walls.indexOf(run[0]), m = k + run.length - 1;
+  if (k === 0 || m === room.walls.length - 1) return ' Remove gap takes it out; nothing else moves.';
+  if (run.length > 1) return ' Remove gap joins it and the gaps next to it into one straight dashed line; nothing else moves.';
+  return ' Remove gap takes it out and the walls after it move up to join on.';
+};
+const gapRun = (room, w) => {
+  let a = room.walls.indexOf(w), b = a;
+  while (a > 0 && nothing(room.walls[a - 1])) a--;
+  while (b < room.walls.length - 1 && nothing(room.walls[b + 1])) b++;
+  return room.walls.slice(a, b + 1);
+};
+
+// Join a run of gaps into its first one, running straight from where the run starts to where it
+// ends; the turns either side change to meet it, so every wall stays where it was.
+async function joinGaps(room, run) {
+  const g = geometry(room), n = room.walls.length, k = room.walls.indexOf(run[0]), m = k + run.length - 1;
+  const from = g.pts[k], to = g.pts[m + 1], v = { x: to.x - from.x, y: to.y - from.y };
+  const h = (Math.atan2(v.y, v.x) * 180) / Math.PI;
+  // Unrounded turns: the walls after are placed from these, so rounding would shift them.
+  const turn = a => ((((a % 360) + 540) % 360) - 180);
+  const setTurn = (w, a) => { w.turn = Math.round(turn(a) * 1e4) / 1e4; w.customTurn = !TURNS.some(([t]) => t === w.turn); };
+  if (k > 0) setTurn(room.walls[k - 1], h - g.segs[k - 1].heading);
+  else room.heading0 = h;
+  const next = m + 1 < n ? g.segs[m + 1] : g.closed ? g.segs[0] : null;
+  const w = run[0];
+  if (next) setTurn(w, next.heading - h);
+  w.length = Math.round(Math.hypot(v.x, v.y) * 100) / 100;
+  w.gap = true;
+  delete w.open;
+  for (const x of run.slice(1)) {
+    for (const p of roomPhotos(room.id, x.id)) { p.wallId = null; await db.putPhoto(p); }
+    if (selectedWall === x.id) selectedWall = w.id;
+  }
+  room.walls.splice(k + 1, run.length - 1);
+}
 
 async function deleteWall(room, w) {
   const i = room.walls.indexOf(w);
   if (w.gap) {
-    if (!gapRemovable(room, w)) {
-      alert('This gap keeps the walls after it where they are, so it stays. Put a wall back here, or split it and put a wall in part of it.');
-      return false;
-    }
-    if (i === 0 && room.walls.length > 1) {
-      // Corner A moves to where wall 2 starts: the first wall then runs the way wall 2 did, and
+    const run = gapRun(room, w), k = room.walls.indexOf(run[0]), m = k + run.length - 1, n = room.walls.length;
+    const drop = async list => {
+      for (const x of list) {
+        for (const p of roomPhotos(room.id, x.id)) { p.wallId = null; await db.putPhoto(p); }
+        if (selectedWall === x.id) selectedWall = null;
+      }
+    };
+    if (m === n - 1) {
+      await drop(run);
+      room.walls.splice(k);
+    } else if (k === 0) {
+      // Corner A moves to where the first wall after them starts: that wall then runs from A, and
       // what is placed by its distance from A shifts back by the same amount.
-      const g = geometry(room), A = g.segs[1].p0;
-      room.heading0 = normAngle(g.segs[1].heading);
+      const g = geometry(room), A = g.segs[m + 1].p0;
+      room.heading0 = normAngle(g.segs[m + 1].heading);
       for (const sh of room.shapes || []) {
         if (segShape(sh)) Object.assign(sh, { x1: +sh.x1 - A.x, y1: +sh.y1 - A.y, x2: +sh.x2 - A.x, y2: +sh.y2 - A.y });
         else Object.assign(sh, { x: +sh.x - A.x, y: +sh.y - A.y });
       }
       for (const c of room.columns || []) Object.assign(c, { x: +c.x - A.x, y: +c.y - A.y });
       for (const d of room.dims || []) Object.assign(d, { x1: +d.x1 - A.x, y1: +d.y1 - A.y, x2: +d.x2 - A.x, y2: +d.y2 - A.y });
+      await drop(run);
+      room.walls.splice(0, m + 1);
+    } else if (run.length > 1) {
+      await joinGaps(room, run);
+    } else {
+      if (!confirm(`Remove gap ${i + 1}? The walls after it (${i + 2}–${n}) move up to join on to wall ${i}.`)) return false;
+      await drop(run);
+      room.walls.splice(i, 1);
     }
-    room.walls.splice(i, 1);
-    if (selectedWall === w.id) selectedWall = null;
     return true;
   }
   const photos = roomPhotos(room.id, w.id);
@@ -1043,7 +1104,11 @@ $app.addEventListener('click', async e => {
     case 'rot90': {
       const it = pickedItem(room), x = it?.c || it?.sh;
       if (!x) break;
-      x.rot = normAngle((+x.rot || 0) + 90);
+      if (segShape(x)) {
+        // A free wall or line turns about its middle.
+        const cx = (+x.x1 + +x.x2) / 2, cy = (+x.y1 + +x.y2) / 2, r = v => Math.round(v * 10) / 10;
+        Object.assign(x, { x1: r(cx - (+x.y1 - cy)), y1: r(cy + (+x.x1 - cx)), x2: r(cx - (+x.y2 - cy)), y2: r(cy + (+x.x2 - cx)) });
+      } else x.rot = normAngle((+x.rot || 0) + 90);
       save();
       await rerender();
       break;
@@ -1221,6 +1286,16 @@ $app.addEventListener('click', async e => {
   }
 });
 
+// After typing one of a free wall's / line's ends, length or angle, bring the others in its card
+// up to date (not the one being typed in).
+function syncSegFields(el, sh) {
+  const vals = { x2: toUnit(sh.x2, P.unit), y2: toUnit(sh.y2, P.unit), len: toUnit(roundLen(segLen(sh)), P.unit), angle: segAngle(sh) };
+  for (const [k, v] of Object.entries(vals)) {
+    const inp = el.closest('.op')?.querySelector(`[data-f="shape.${k}"]`);
+    if (inp && inp !== el) inp.value = v;
+  }
+}
+
 $app.addEventListener('input', e => {
   const el = e.target, key = el.dataset.f;
   if (!key) return;
@@ -1230,6 +1305,17 @@ $app.addEventListener('input', e => {
   const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c), shape: room?.shapes?.find(x => x.id === el.dataset.s), fcol: room?.columns?.find(x => x.id === el.dataset.fc) }[scope];
   if (!target) return;
   const v = parseFloat(el.value);
+  if (scope === 'shape' && (prop === 'len' || prop === 'angle')) {
+    // Moves the end; the start stays.
+    if (isNaN(v) || (prop === 'len' && !(v > 0))) return;
+    const L = prop === 'len' ? fromUnit(v, P.unit) : segLen(target), a = ((prop === 'angle' ? v : segAngle(target)) * Math.PI) / 180;
+    target.x2 = Math.round((+target.x1 + L * Math.cos(a)) * 10) / 10;
+    target.y2 = Math.round((+target.y1 + L * Math.sin(a)) * 10) / 10;
+    syncSegFields(el, target);
+    save(`${key}:${el.dataset.s}`);
+    refreshPlan();
+    return;
+  }
   if (scope === 'wall' && prop === 'radius') {
     if (!(v > 0)) return;
     w.bulge = bulgeFor(w, fromUnit(v, P.unit));
@@ -1252,6 +1338,7 @@ $app.addEventListener('input', e => {
     const r = el.closest('.wall')?.querySelector('[data-f="wall.radius"]');
     if (r) r.value = radiusOf(w) === '' ? '' : toUnit(roundLen(radiusOf(w)), P.unit);
   }
+  if (scope === 'shape' && segShape(target) && /^[xy][12]$/.test(prop)) syncSegFields(el, target);
   save(`${key}:${el.dataset.w || ''}:${el.dataset.o || el.dataset.c || el.dataset.s || el.dataset.fc || ''}`);
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
   if (((scope === 'wall' || scope === 'shape') && prop === 'kind') || (scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || ((scope === 'col' || scope === 'fcol') && prop === 'shape') || (scope === 'op' && prop === 'leaves') || (scope === 'project' && prop === 'unit')) rerender();

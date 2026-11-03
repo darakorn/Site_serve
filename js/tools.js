@@ -2,8 +2,9 @@
 //   edit  — drag doors, windows, columns and drawn shapes; drag handles to resize a shape, or on
 //           the selected wall: either end to stretch / swing it, the middle to move it sideways.
 //           The walls next to it keep their direction and follow, so a closed room stays closed.
-//   wall  — tap or drag to add a wall from where the last one ends (light / glass: the same, as
-//           a light wall or a glass wall).
+//   wall  — tap or drag to add a wall at whichever open end of the walls is nearer: on from where
+//           the last one ends, or before corner A (light / glass: the same, as a light wall or a
+//           glass wall).
 //   column — tap to drop a free-standing column (drag it later in edit).
 //   dim   — drag between two points for a dimension.
 //   line / rect / circle / fwall — drag out a shape (fwall: a free-standing wall).
@@ -125,7 +126,12 @@ export function attachPlanTools(box, ctx) {
   // ---------- starting a drag ----------
   function begin(e) {
     const tool = ctx.tool(), { p, ppcm } = frame(e), el = e.target;
-    if (tool === 'wall' || tool === 'light' || tool === 'glass') return { kind: 'wall', wallKind: tool === 'wall' ? null : tool };
+    if (tool === 'wall' || tool === 'light' || tool === 'glass') {
+      // An open run of walls grows from either end: the one nearer the finger.
+      const g = geometry(room), open = room.walls.length && !g.closed && g.gap >= 1;
+      const atStart = !!open && dist(p, g.pts[0]) < dist(p, g.end);
+      return { kind: 'wall', wallKind: tool === 'wall' ? null : tool, atStart };
+    }
     if (tool === 'column') return { kind: 'col-new' };
     if (tool === 'dim') return { kind: 'dim-new', a: snapPoint(p, ppcm).p };
     if (tool === 'line' || tool === 'rect' || tool === 'circle' || tool === 'fwall') return { kind: 'shape-new', a: snapPoint(p, ppcm).p };
@@ -169,9 +175,11 @@ export function attachPlanTools(box, ctx) {
 
     if (d.kind === 'wall') {
       const g = geometry(room), last = g.segs.at(-1);
-      const from = last ? g.end : { x: 0, y: 0 };
+      // Before corner A the new wall is drawn out from A, and runs back into it.
+      const from = d.atStart ? g.pts[0] : last ? g.end : { x: 0, y: 0 };
+      const base = d.atStart ? g.segs[0].heading + 180 : last ? last.heading + (+last.wall.turn || 0) : 0;
       const s = snapPoint(p, ppcm, { walls: false });
-      const { heading, len } = aim(from, s.p, last ? last.heading + (+last.wall.turn || 0) : 0, !!s.at);
+      const { heading, len } = aim(from, s.p, base, !!s.at);
       d.result = { from, heading, len };
       snapAt = s.at;
       show({ draftWall: { a: from, b: add(from, dirOf(heading), len), len }, snapAt });
@@ -319,12 +327,7 @@ export function attachPlanTools(box, ctx) {
     // put, and shift the view so the plan doesn't jump under the finger.
     const A = P[0];
     d.shift = Math.hypot(A.x, A.y) > 1e-9 ? A : null;
-    for (const sh of room.shapes) {
-      if (segShape(sh)) Object.assign(sh, { x1: round1(+sh.x1 - A.x), y1: round1(+sh.y1 - A.y), x2: round1(+sh.x2 - A.x), y2: round1(+sh.y2 - A.y) });
-      else Object.assign(sh, { x: round1(+sh.x - A.x), y: round1(+sh.y - A.y) });
-    }
-    for (const c of room.columns || []) Object.assign(c, { x: round1(+c.x - A.x), y: round1(+c.y - A.y) });
-    for (const m of room.dims || []) Object.assign(m, { x1: round1(+m.x1 - A.x), y1: round1(+m.y1 - A.y), x2: round1(+m.x2 - A.x), y2: round1(+m.y2 - A.y) });
+    shiftOrigin(A);
     const f0 = d.frame0 ||= d.frame;
     d.frame = { ...f0, ox: f0.ox + A.x * f0.s, oy: f0.oy + A.y * f0.s };
     return snapAt;
@@ -360,6 +363,15 @@ export function attachPlanTools(box, ctx) {
       // Turn the picked column or rectangle about its centre to face the finger; 15° steps with snap.
       const it = (room.columns || []).find(x => x.id === d.target) || (room.shapes || []).find(x => x.id === d.target);
       if (!it) return null;
+      if (segShape(it)) {
+        // A free wall or line turns about its middle; the handle sits off its left side.
+        const [a, b] = shapePoints(it), c = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, half = dist(a, b) / 2;
+        let h = degOf(sub(p, c)) + 90;
+        if (ctx.snap()) h = Math.round(h / 15) * 15;
+        const u = dirOf(h);
+        Object.assign(it, { x1: round1(c.x - u.x * half), y1: round1(c.y - u.y * half), x2: round1(c.x + u.x * half), y2: round1(c.y + u.y * half) });
+        return null;
+      }
       const c = it.type === 'rect' ? { x: (+it.x || 0) + (+it.w || 0) / 2, y: (+it.y || 0) + (+it.h || 0) / 2 } : { x: +it.x || 0, y: +it.y || 0 };
       const a = degOf(sub(p, c)) + 90;
       it.rot = normAngle(ctx.snap() ? Math.round(a / 15) * 15 : a);
@@ -389,10 +401,32 @@ export function attachPlanTools(box, ctx) {
     return s.at;
   }
 
+  // Corner A moved to A (in the old plan cm): move the drawn shapes, free-standing columns and
+  // dimensions back so they stay where they were.
+  function shiftOrigin(A) {
+    for (const sh of room.shapes || []) {
+      if (segShape(sh)) Object.assign(sh, { x1: round1(+sh.x1 - A.x), y1: round1(+sh.y1 - A.y), x2: round1(+sh.x2 - A.x), y2: round1(+sh.y2 - A.y) });
+      else Object.assign(sh, { x: round1(+sh.x - A.x), y: round1(+sh.y - A.y) });
+    }
+    for (const c of room.columns || []) Object.assign(c, { x: round1(+c.x - A.x), y: round1(+c.y - A.y) });
+    for (const m of room.dims || []) Object.assign(m, { x1: round1(+m.x1 - A.x), y1: round1(+m.y1 - A.y), x2: round1(+m.x2 - A.x), y2: round1(+m.y2 - A.y) });
+  }
+
   // ---------- letting go ----------
   function finish() {
     const d = drag;
     drag = null;
+    if (d.kind === 'wall' && d.result && d.result.len >= GRID && d.atStart) {
+      // The new wall becomes wall 1 and its start the new corner A; what is placed from A moves
+      // back by as much, so everything stays where it is.
+      const { heading, len } = d.result, first = geometry(room).segs[0], S = add({ x: 0, y: 0 }, dirOf(heading), len);
+      room.heading0 = normAngle(heading + 180);
+      const nw = ctx.newWall({ length: len, ...(d.wallKind ? { kind: d.wallKind } : {}) });
+      setTurn(nw, first.heading - (heading + 180));
+      room.walls.unshift(nw);
+      shiftOrigin(S);
+      return ctx.done(nw.id, 'wall');
+    }
     if (d.kind === 'wall' && d.result && d.result.len >= GRID) {
       const { heading, len } = d.result, last = room.walls.at(-1);
       if (!last) room.heading0 = normAngle(heading);
