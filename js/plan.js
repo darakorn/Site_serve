@@ -224,7 +224,7 @@ export function geometry(room) {
   }
   // Corners plus the tip of each curved wall: what the plan has to fit.
   const extent = [...pts, ...segs.filter(sg => sg.arc).map(sg => sg.arc.apex)];
-  return { pts, segs, end, gap, closed: segs.length >= 3 && gap < 1, area, perimeter, cw, extent };
+  return { pts, segs, end, gap, closed: gap < 1 && (segs.length >= 3 || (segs.length === 2 && segs.every(sg => sg.arc))), area, perimeter, cw, extent };
 }
 
 // SVG path through the room's corners, with arcs for curved walls. X maps plan → SVG.
@@ -485,7 +485,7 @@ export function renderPlan(room, opt = {}) {
   }
   for (const h of opt.handles || []) {
     const q = X(h);
-    out.push(`<circle cx="${f(q.x)}" cy="${f(q.y)}" r="${f(Z(8))}" fill="#fff" stroke="${ACC}" stroke-width="${f(Z(2.5))}" data-handle="${h.id}" data-for="${h.for}" style="cursor:grab"/>`);
+    out.push(`<circle cx="${f(q.x)}" cy="${f(q.y)}" r="${f(Z(h.solid ? 9 : 8))}" fill="${h.solid ? ACC : '#fff'}" stroke="${h.solid ? '#fff' : ACC}" stroke-width="${f(Z(2.5))}" data-handle="${h.id}" data-for="${h.for}" style="cursor:grab"/>`);
   }
 
   // Plan ↔ SVG mapping, so a tap or a drag on the plan can be turned back into room cm.

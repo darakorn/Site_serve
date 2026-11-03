@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.15';
+const APP_VERSION = '1.0.16';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -144,6 +144,18 @@ async function rerender() {
   scrollTo(0, y);
 }
 
+// Curved walls are stored as a bulge (how far the arc bows out from the chord); the radius is
+// worked out from it, and typing a radius sets the bulge. Up to a half circle.
+function radiusOf(w) {
+  const c = +w.length || 0, h = Math.min(Math.abs(+w.bulge || 0), c / 2);
+  return h ? (c * c / 4 + h * h) / (2 * h) : '';
+}
+function bulgeFor(w, R) {
+  const c = +w.length || 0, h = R > c / 2 ? R - Math.sqrt(R * R - c * c / 4) : c / 2;
+  return Math.round((+w.bulge < 0 ? -h : h) * 10) / 10;
+}
+const roundLen = v => (v === '' ? '' : Math.round(v * 10) / 10);
+
 // ---------- small templates ----------
 function field(label, key, val, type = 'text', extra = '') {
   const num = type === 'number' ? ` step="any"${extra.includes('inputmode') ? '' : ' inputmode="decimal"'}` : '';
@@ -190,7 +202,7 @@ async function viewHome() {
     ${list.length
       ? list.map(p => `<a class="card link" href="#/p/${p.id}"><b>${esc(p.name || 'Untitled')}</b><small>${[p.site, `${p.rooms.length} room${p.rooms.length === 1 ? '' : 's'}`, p.date].filter(Boolean).map(esc).join(' · ')}</small></a>`).join('')
       : '<p class="empty">No projects yet. Tap the button above to start a survey.</p>'}
-    <label class="btn ghost block">Import backup (.json)<input type="file" accept=".json,application/json" data-import hidden></label>
+    <label class="btn ghost block">Import backup (.siteserve)<input type="file" data-import hidden></label>
     <p class="hint version">Version ${APP_VERSION}</p>
   </main>`;
 }
@@ -224,7 +236,8 @@ function viewProject() {
         <label class="field"><span>Width (${unitLabel()})</span><input id="nr-w" type="number" inputmode="decimal" step="any"></label>
         <label class="field"><span>Length (${unitLabel()})</span><input id="nr-l" type="number" inputmode="decimal" step="any"></label>
       </div>
-      <p class="hint">Enter width × length for a rectangular room, or leave blank and add walls one by one.</p>
+      <label class="field"><span>or Radius R (${unitLabel()}) for a round room</span><input id="nr-r" type="number" inputmode="decimal" step="any"></label>
+      <p class="hint">Enter width × length for a rectangular room, a radius for a round one, or leave blank and add walls one by one.</p>
       <button class="btn primary block" data-act="add-room">+ Add room</button>
     </section>
     <h2>Export</h2>
@@ -367,8 +380,10 @@ function wallCard(room, w, i) {
     </div>
     ${!last && !known ? field('Turn angle (+ right / − left)', 'wall.turn', w.turn, 'number', `data-w="${w.id}" inputmode="text"`) : ''}
     ${curved ? `<div class="row bulge">${lenField('Bulge (+ out / − into room)', 'wall.bulge', w.bulge, `data-w="${w.id}" inputmode="text"`)}
+      ${lenField('Radius R', 'wall.radius', roundLen(radiusOf(w)), `data-w="${w.id}"`)}
       <button class="icon" data-act="del-bulge" data-w="${w.id}" aria-label="Make straight">✕</button></div>
-      <p class="hint">Measured from the middle of the straight corner-to-corner line out to the wall · the length above is corner to corner</p>` : ''}
+      <p class="hint">Bulge is measured from the middle of the straight corner-to-corner line out to the wall · or type the radius · the length above is corner to corner</p>
+      <div class="btns"><button class="btn sm ghost" data-act="half-circle" data-w="${w.id}">◐ Half circle</button></div>` : ''}
     ${field('Wall notes', 'wall.note', w.note, 'text', `data-w="${w.id}" placeholder="e.g. plaster wall, 2 sockets"`)}
     ${w.openings.map(o => openingRow(w, o)).join('')}
     ${(w.columns || []).map(c => columnRow(w, c)).join('')}
@@ -414,7 +429,7 @@ function shapesCard(room) {
 
 const snap = v => Math.round(v / 5) * 5; // drawn shapes snap to 5 cm
 
-// Handles shown in edit mode: the far end of the selected wall, and the selected shape's grips.
+// Handles shown in edit mode: both ends and the middle of the selected wall, and the selected shape's grips.
 function handlesFor(room) {
   const out = [];
   const sh = room.shapes?.find(x => x.id === selectedOp);
@@ -425,29 +440,49 @@ function handlesFor(room) {
     else out.push({ ...a, id: 'line-1', for: sh.id }, { ...b, id: 'line-2', for: sh.id });
   }
   const sg = geometry(room).segs.find(x => x.wall.id === selectedWall);
-  if (sg && !sh) out.push({ ...sg.p1, id: 'wall-end', for: sg.wall.id });
+  if (sg && !sh) {
+    const m = sg.arc ? sg.arc.apex : { x: (sg.p0.x + sg.p1.x) / 2, y: (sg.p0.y + sg.p1.y) / 2 };
+    out.push({ ...sg.p0, id: 'wall-start', for: sg.wall.id }, { ...sg.p1, id: 'wall-end', for: sg.wall.id }, { ...m, id: 'wall-move', for: sg.wall.id, solid: true });
+  }
   return out;
 }
 
-// Quick buttons on the plan for the door picked there: flip hinge side, flip in / out.
-function doorQuick(room) {
-  const w = room.walls.find(x => x.openings.some(o => o.id === selectedOp));
-  const o = w?.openings.find(x => x.id === selectedOp);
-  const st = o?.type === 'door' && openStyle(o);
-  if (!st || st.style === 'slide') return '';
-  const at = `data-w="${w.id}" data-o="${o.id}"`;
+// What is picked on the plan: a door / window / opening, a column, a drawn item, or — while
+// editing on the plan, where the form is out of sight — the selected wall.
+function pickedItem(room) {
+  for (const w of room.walls) {
+    const o = w.openings.find(x => x.id === selectedOp);
+    if (o) return { kind: 'op', w, o, name: openingTags(room).get(o.id) };
+    const c = (w.columns || []).find(x => x.id === selectedOp);
+    if (c) return { kind: 'col', w, c, name: 'Column' };
+  }
+  const sh = room.shapes?.find(x => x.id === selectedOp);
+  if (sh) return { kind: 'shape', sh, name: shapeName(sh) };
+  const i = planTool ? room.walls.findIndex(x => x.id === selectedWall) : -1;
+  if (i >= 0) return { kind: 'wall', w: room.walls[i], name: `Wall ${i + 1}` };
+  return null;
+}
+
+// Quick buttons under the plan for what was picked there: delete it, and for a door flip the
+// hinge side and in / out.
+function pickQuick(room) {
+  const it = pickedItem(room);
+  if (!it) return '';
+  const o = it.kind === 'op' && it.o, st = o?.type === 'door' && openStyle(o);
+  const at = o ? `data-w="${it.w.id}" data-o="${o.id}"` : '';
   return `<div class="door-quick">
-    <b>${esc(openingTags(room).get(o.id))}</b>
-    <button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>
-    ${st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
-    <button class="btn sm icon-btn" data-act="unpick" aria-label="Close">✕</button>
+    <b>${esc(it.name)}</b>
+    ${st && st.style !== 'slide' ? `<button class="btn sm" data-act="door-hinge" ${at}>⇆ ${o.hinge === 'right' ? 'Hinge right' : 'Hinge left'}</button>` : ''}
+    ${st && st.style === 'swing' ? `<button class="btn sm" data-act="door-swing" ${at}>⇅ ${o.swing === 'out' ? 'Opens out' : 'Opens in'}</button>` : ''}
+    <button class="btn sm danger" data-act="del-picked">🗑 Delete</button>
+    <button class="btn sm icon-btn" data-act="${it.kind === 'wall' ? 'close-wall' : 'unpick'}" aria-label="Close">✕</button>
   </div>`;
 }
 
 const PLAN_TOOLS = { edit: '✋ Move / resize', wall: '🧱 Wall', line: '╱ Line', rect: '▭ Rectangle', circle: '◯ Circle' };
 
 function drawBar() {
-  const room = curRoom(), quick = room ? doorQuick(room) : '';
+  const room = curRoom(), quick = room ? pickQuick(room) : '';
   const undo = `<button class="btn sm icon-btn" data-act="undo" aria-label="Undo"${hist.past.length ? '' : ' disabled'}>↶</button>
     <button class="btn sm icon-btn" data-act="redo" aria-label="Redo"${hist.future.length ? '' : ' disabled'}>↷</button>`;
   if (!planTool) return `${quick}${undo}<button class="btn sm" data-act="tool" data-tool="edit">✏️ Edit / draw on plan</button>`;
@@ -455,7 +490,7 @@ function drawBar() {
     <button class="btn sm${snapOn ? ' on' : ''}" data-act="snap" aria-pressed="${snapOn}">🧲 Snap</button>
     <button class="btn sm primary" data-act="tool-off">Done</button>
     <small class="tool-hint">${{
-      edit: 'Drag doors, windows, columns or items to move them · tap a wall, then drag its end to stretch / turn it',
+      edit: 'Drag doors, windows, columns or items to move them · tap a wall, then drag an end to stretch / turn it or the middle to move it',
       wall: 'Tap or drag to where the wall ends; it continues from the last wall · finish at corner A to close the room',
     }[planTool] || 'Drag on the plan to draw'}</small>`;
 }
@@ -667,12 +702,12 @@ async function backupBlob() {
 }
 
 async function backup() {
-  await shareOrDownload(await backupBlob(), `${fileSafe(P.name)}.survey.json`);
+  await shareOrDownload(await backupBlob(), `${fileSafe(P.name)}.siteserve`);
 }
 
 // ---------- upload to the office server (server.py) ----------
 // Everything about the project goes to DATA/<survey date>/<project>/ on the server:
-// the backup .json, a DXF of all rooms, and per room its plan (PNG + DXF) and photos,
+// the .siteserve backup, a DXF of all rooms, and per room its plan (PNG + DXF) and photos,
 // with a second copy of each annotated photo that has its lines drawn in.
 const seg = s => fileSafe(s).replace(/^\.+/, '') || '_';
 
@@ -686,7 +721,7 @@ async function uploadProject(btn) {
   }
   const base = `${seg(P.date || today())}/${seg(P.name)}`;
   const files = [
-    [`${seg(P.name)}.survey.json`, backupBlob],
+    [`${seg(P.name)}.siteserve`, backupBlob],
     [`${seg(P.name)} all rooms.dxf`, () => dxfBlob(P.rooms)],
   ];
   const used = new Set();
@@ -763,7 +798,10 @@ $app.addEventListener('click', async e => {
     case 'add-room': {
       const name = document.getElementById('nr-name').value.trim() || `Room ${P.rooms.length + 1}`;
       const W = fromUnit(parseFloat(document.getElementById('nr-w').value), P.unit), L = fromUnit(parseFloat(document.getElementById('nr-l').value), P.unit);
-      const walls = W > 0 && L > 0 ? [W, L, W, L].map(length => ({ ...newWall(), length })) : [newWall()];
+      const R = fromUnit(parseFloat(document.getElementById('nr-r').value), P.unit);
+      // A round room is two half-circle walls across the diameter.
+      const walls = R > 0 ? [0, 1].map(() => ({ ...newWall(), length: 2 * R, turn: -180, customTurn: true, bulge: R }))
+        : W > 0 && L > 0 ? [W, L, W, L].map(length => ({ ...newWall(), length })) : [newWall()];
       const r = { id: uid(), name, height: '', note: '', walls };
       P.rooms.push(r);
       save();
@@ -796,6 +834,24 @@ $app.addEventListener('click', async e => {
       save();
       await rerender();
       document.getElementById('w-' + nw.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      break;
+    }
+    case 'del-picked': {
+      const it = pickedItem(room);
+      if (!it) break;
+      if (it.kind === 'wall') {
+        if (!confirm(`Delete ${it.name}? Its photos move to the room overview.`)) break;
+        room.walls = room.walls.filter(x => x !== it.w);
+        for (const p of roomPhotos(room.id, it.w.id)) { p.wallId = null; await db.putPhoto(p); }
+        selectedWall = null;
+      } else if (it.kind === 'op') {
+        it.w.openings = it.w.openings.filter(x => x !== it.o);
+        resolveRefs(it.w);
+      } else if (it.kind === 'col') it.w.columns = it.w.columns.filter(x => x !== it.c);
+      else room.shapes = room.shapes.filter(x => x !== it.sh);
+      selectedOp = null;
+      save();
+      await rerender();
       break;
     }
     case 'del-wall':
@@ -877,6 +933,7 @@ $app.addEventListener('click', async e => {
       break;
     case 'add-bulge': w.bulge = Math.round((+w.length || 100) / 10); save(); rerender(); break;
     case 'del-bulge': delete w.bulge; save(); rerender(); break;
+    case 'half-circle': w.bulge = bulgeFor(w, 0); save(); rerender(); break;
     case 'insert-wall': {
       // The new wall starts where this one ends and runs straight on; adjust its length and turn.
       const nw = { ...newWall(), length: 100, turn: 0 };
@@ -941,6 +998,15 @@ $app.addEventListener('input', e => {
   const target = { project: P, room, wall: w, op: w?.openings.find(o => o.id === el.dataset.o), col: w?.columns?.find(c => c.id === el.dataset.c), shape: room?.shapes?.find(x => x.id === el.dataset.s) }[scope];
   if (!target) return;
   const v = parseFloat(el.value);
+  if (scope === 'wall' && prop === 'radius') {
+    if (!(v > 0)) return;
+    w.bulge = bulgeFor(w, fromUnit(v, P.unit));
+    const b = el.closest('.bulge')?.querySelector('[data-f="wall.bulge"]');
+    if (b) b.value = toUnit(w.bulge, P.unit);
+    save(`wall.bulge:${w.id}::`);
+    refreshPlan();
+    return;
+  }
   target[prop] = el.type !== 'number' ? el.value : el.value === '' || isNaN(v) ? '' : el.hasAttribute('data-len') ? fromUnit(v, P.unit) : v;
   if (scope === 'op' && prop === 'ref') {
     // Switching the reference keeps the opening where it is; only the measured distance changes.
@@ -950,6 +1016,10 @@ $app.addEventListener('input', e => {
   }
   if (scope === 'op' && prop === 'type' && target.type === 'window' && (target.sill === undefined || target.sill === '')) target.sill = OPEN_DEFAULTS.window.sill;
   if (scope === 'op') resolveRefs(w);
+  if (scope === 'wall' && (prop === 'bulge' || prop === 'length')) {
+    const r = el.closest('.wall')?.querySelector('[data-f="wall.radius"]');
+    if (r) r.value = radiusOf(w) === '' ? '' : toUnit(roundLen(radiusOf(w)), P.unit);
+  }
   save(`${key}:${el.dataset.w || ''}:${el.dataset.o || el.dataset.c || el.dataset.s || ''}`);
   if (prop === 'name' && (scope === 'room' || view.name === 'project')) $app.querySelector('.bar h1').textContent = el.value;
   if ((scope === 'op' && (prop === 'type' || prop === 'style' || prop === 'ref')) || (scope === 'col' && prop === 'shape') || (scope === 'project' && prop === 'unit')) rerender();

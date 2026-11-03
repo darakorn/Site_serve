@@ -1,6 +1,7 @@
 // Editing on the room plan with a finger or mouse.
-//   edit  — drag doors, windows, columns and drawn shapes; drag handles to resize a shape or to
-//           swing / stretch the selected wall (its far end).
+//   edit  — drag doors, windows, columns and drawn shapes; drag handles to resize a shape, or on
+//           the selected wall: either end to stretch / swing it, the middle to move it sideways.
+//           The walls next to it keep their direction and follow, so a closed room stays closed.
 //   wall  — tap or drag to add a wall from where the last one ends.
 //   line / rect / circle — drag out a shape.
 // With snap on, points stick to room corners, shape points and walls nearby, angles to 45° steps
@@ -20,6 +21,13 @@ const add = (p, v, k) => ({ x: p.x + v.x * k, y: p.y + v.y * k });
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const degOf = v => (Math.atan2(v.y, v.x) * 180) / Math.PI;
 const dirOf = a => ({ x: Math.cos((a * Math.PI) / 180), y: Math.sin((a * Math.PI) / 180) });
+const cross = (a, b) => a.x * b.y - a.y * b.x;
+
+// Where the line through p along u meets the line through q along v; null if they're parallel.
+function meet(p, u, q, v) {
+  const c = cross(u, v);
+  return Math.abs(c) < 1e-6 ? null : add(p, u, cross(sub(q, p), v) / c);
+}
 
 // Points worth snapping to on a drawn shape.
 function keyPoints(sh) {
@@ -114,7 +122,11 @@ export function attachPlanTools(box, ctx) {
     if (tool !== 'edit') return null;
 
     const handle = el.closest?.('[data-handle]')?.dataset.handle;
-    if (handle) return { kind: 'handle', handle, target: el.closest('[data-handle]').dataset.for };
+    if (handle) {
+      const target = el.closest('[data-handle]').dataset.for;
+      if (handle.startsWith('wall-')) return { kind: 'handle', handle, target, orig: snapshot(), grab: p };
+      return { kind: 'handle', handle, target };
+    }
     const shId = el.closest?.('[data-shape]')?.dataset.shape;
     if (shId) {
       const sh = room.shapes.find(x => x.id === shId);
@@ -135,8 +147,9 @@ export function attachPlanTools(box, ctx) {
 
   // ---------- following the finger ----------
   function move(e) {
-    const { p, ppcm } = frame(e);
     const d = drag;
+    const { p: raw, ppcm } = frame(e);
+    const p = d.shift ? add(raw, d.shift, 1) : raw;
     let snapAt = null;
 
     if (d.kind === 'wall') {
@@ -191,26 +204,98 @@ export function attachPlanTools(box, ctx) {
     show({ snapAt });
   }
 
-  // Handles: corners of a rectangle, the rim of a circle, the ends of a line, or the far end
-  // of the selected wall. Returns the point it snapped to, if any.
-  function dragHandle(d, p, ppcm) {
-    if (d.handle === 'wall-end') {
-      const g = geometry(room), sg = g.segs.find(x => x.wall.id === d.target);
-      if (!sg) return null;
-      const i = sg.i;
-      // Only corners before this wall stay put while it moves, so only they (and A, to close) can catch it.
-      const s = snapPoint(p, ppcm, { points: g.pts.slice(0, i), walls: false });
-      const prevHeading = i > 0 ? g.segs[i - 1].heading + (+g.segs[i - 1].wall.turn || 0) : 0;
-      const { heading, len } = aim(sg.p0, s.p, prevHeading, !!s.at);
-      // Turning this wall turns the corner before it; the corner after it turns back the other way,
-      // so the walls that follow keep their direction and simply shift.
-      const delta = heading - sg.heading;
-      if (i === 0) room.heading0 = normAngle((+room.heading0 || 0) + delta);
-      else setTurn(room.walls[i - 1], (+room.walls[i - 1].turn || 0) + delta);
-      if (i < room.walls.length - 1) setTurn(sg.wall, (+sg.wall.turn || 0) - delta);
-      sg.wall.length = len;
-      return s.at;
+  // The room as it was when a wall drag began; every move works out the new shape from this.
+  function snapshot() {
+    const g = geometry(room), n = room.walls.length;
+    return {
+      n, closed: g.closed,
+      pts: g.pts.slice(0, g.closed ? n : n + 1),
+      segs: g.segs.map(({ u, inward, heading }) => ({ u, inward, heading })),
+      walls: room.walls.map(w => ({ turn: w.turn, customTurn: w.customTurn, ops: w.openings.map(o => o.offset), cols: (w.columns || []).map(c => c.offset) })),
+      heading0: room.heading0,
+      shapes: JSON.parse(JSON.stringify(room.shapes || [])),
+    };
+  }
+
+  // Dragging the selected wall: 'wall-end' / 'wall-start' move that corner (the wall stretches and
+  // swings about its other end), 'wall-move' slides the whole wall sideways. The wall beyond a
+  // moved corner keeps its direction and shifts with it, and the one after that stretches to meet
+  // it, so the rest of the room stays where it is. Returns the point it snapped to, if any.
+  function reshapeWall(d, p, ppcm) {
+    const o = d.orig, { n, closed } = o, i = room.walls.findIndex(w => w.id === d.target);
+    if (i < 0) return null;
+    room.shapes = JSON.parse(JSON.stringify(o.shapes));
+    const k = c => (closed ? ((c % n) + n) % n : c); // corner index (a closed room wraps round)
+    const has = w => closed || (w >= 0 && w < n);      // is there a wall with this index?
+    const seg = w => o.segs[k(w)];
+    const P = o.pts.map(q => ({ ...q }));
+    const at = c => o.pts[k(c)];
+    let snapAt = null;
+
+    // Move corner c (the end of wall `near`) to q; wall `beside`, on the other side of the corner,
+    // keeps its direction, and its far corner slides along the wall after it.
+    const pushCorner = (c, q, beside, farCorner, after, afterFixed) => {
+      P[k(c)] = q;
+      if (!has(beside)) return;
+      const shifted = add(at(farCorner), sub(q, at(c)), 1);
+      P[k(farCorner)] = (has(after) && meet(q, seg(beside).u, at(afterFixed), seg(after).u)) || shifted;
+    };
+
+    if (d.handle === 'wall-move') {
+      let t = dot(sub(p, d.grab), seg(i).inward);
+      if (ctx.snap()) t = grid(t);
+      const a = add(at(i), seg(i).inward, t), u = seg(i).u;
+      P[k(i)] = (has(i - 1) && meet(a, u, at(i - 1), seg(i - 1).u)) || a;
+      P[k(i + 1)] = (has(i + 1) && meet(a, u, at(i + 2), seg(i + 1).u)) || add(at(i + 1), seg(i).inward, t);
+    } else {
+      const end = d.handle === 'wall-end';
+      const pivot = end ? i : i + 1, moving = end ? [i + 1, i + 2] : [i, i - 1];
+      const fixed = o.pts.filter((_, c) => !moving.some(m => k(m) === c));
+      const s = snapPoint(p, ppcm, { points: fixed, walls: false });
+      const { heading, len } = aim(at(pivot), s.p, seg(i).heading + (end ? 0 : 180), !!s.at);
+      const q = s.at ? s.p : add(at(pivot), dirOf(heading), len);
+      if (end) pushCorner(i + 1, q, i + 1, i + 2, i + 2, i + 3);
+      else pushCorner(i, q, i - 1, i - 1, i - 2, i - 2);
+      snapAt = s.at;
     }
+
+    // Corners → wall lengths and turns. A wall shrunk to nothing keeps its old direction.
+    const H = room.walls.map((w, j) => {
+      const v = sub(P[k(j + 1)] ?? P[k(j)], P[k(j)]);
+      return Math.hypot(v.x, v.y) > 0.05 ? o.segs[j].heading + normAngle(degOf(v) - o.segs[j].heading) : o.segs[j].heading;
+    });
+    room.heading0 = normAngle(H[0]);
+    room.walls.forEach((w, j) => {
+      const ow = o.walls[j], last = j === n - 1;
+      w.length = round1(dist(P[k(j)], P[k(j + 1)] ?? P[k(j)]));
+      if (last && !closed) Object.assign(w, { turn: ow.turn, customTurn: ow.customTurn });
+      else if (normAngle(H[k(j + 1)] - H[j]) !== normAngle(+ow.turn || 0)) setTurn(w, H[k(j + 1)] - H[j]);
+      else Object.assign(w, { turn: ow.turn, customTurn: ow.customTurn });
+      // Openings and columns are measured from the wall's start: keep them where they were when
+      // that corner moves.
+      const back = dot(sub(o.pts[k(j)], P[k(j)]), dirOf(H[j]));
+      w.openings.forEach((x, m) => { x.offset = Math.max(0, round1((+ow.ops[m] || 0) + back)); });
+      (w.columns || []).forEach((x, m) => { x.offset = Math.max(0, round1((+ow.cols[m] || 0) + back)); });
+      ctx.resolveRefs(w);
+    });
+
+    // Corner A is where the plan starts from: if it moved, move the drawn shapes back so they stay
+    // put, and shift the view so the plan doesn't jump under the finger.
+    const A = P[0];
+    d.shift = Math.hypot(A.x, A.y) > 1e-9 ? A : null;
+    for (const sh of room.shapes) {
+      if (sh.type === 'line') Object.assign(sh, { x1: round1(+sh.x1 - A.x), y1: round1(+sh.y1 - A.y), x2: round1(+sh.x2 - A.x), y2: round1(+sh.y2 - A.y) });
+      else Object.assign(sh, { x: round1(+sh.x - A.x), y: round1(+sh.y - A.y) });
+    }
+    const f0 = d.frame0 ||= d.frame;
+    d.frame = { ...f0, ox: f0.ox + A.x * f0.s, oy: f0.oy + A.y * f0.s };
+    return snapAt;
+  }
+
+  // Handles: corners of a rectangle, the rim of a circle, the ends of a line, or on the selected
+  // wall its two ends and middle. Returns the point it snapped to, if any.
+  function dragHandle(d, p, ppcm) {
+    if (d.handle.startsWith('wall-')) return reshapeWall(d, p, ppcm);
     const sh = room.shapes.find(x => x.id === d.target);
     if (!sh) return null;
     const s = snapPoint(p, ppcm, { skipShape: sh.id }), q = s.p;
