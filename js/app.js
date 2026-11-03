@@ -6,7 +6,7 @@ import { newZoom, applyZoom, attachZoom } from './zoom.js';
 import { attachPlanTools } from './tools.js';
 
 // Bump with CACHE in sw.js and add a CHANGELOG.md entry on every release.
-const APP_VERSION = '1.0.14';
+const APP_VERSION = '1.0.15';
 
 const $app = document.getElementById('app');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);

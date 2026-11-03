@@ -1,10 +1,11 @@
-// Network-first with cache fallback, so the app opens offline on site.
+// Network-first with cache fallback, so the app opens offline on site. Requests skip the
+// browser's HTTP cache: without that a phone could keep serving an old release from it.
 // Matches APP_VERSION in js/app.js; a new name makes phones fetch the new release.
-const CACHE = 'site-survey-1.0.14';
+const CACHE = 'site-survey-1.0.15';
 const SHELL = ['./', './index.html', './css/app.css', './js/app.js', './js/db.js', './js/plan.js', './js/annotate.js', './js/dxf.js', './js/zoom.js', './js/tools.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(
@@ -18,7 +19,7 @@ self.addEventListener('fetch', e => {
   // The upload API must always reach the server, never a cached answer.
   if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.includes('/api/')) return;
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then(res => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));

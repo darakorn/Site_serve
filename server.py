@@ -42,9 +42,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(raw)))
-        self.send_header('Cache-Control', 'no-store')
         self.end_headers()
         self.wfile.write(raw)
+
+    def end_headers(self):
+        # Always revalidate, so a phone never keeps an old release in its HTTP cache.
+        self.send_header('Cache-Control', 'no-cache')
+        super().end_headers()
 
     def api(self):
         url = urlsplit(self.path)
