@@ -17,6 +17,24 @@ PORT="${PORT:-8080}"
 LOG="$HERE/server.log"
 PIDFILE="$HERE/server.pid"
 
+# Double-clicked in the file manager: there is no terminal, so the output would go nowhere.
+# Re-open this script in a terminal window that stays open until Enter is pressed.
+if [ ! -t 0 ] && [ ! -t 1 ] && [ -z "${SITE_SERVE_NO_TERM:-}" ] && [ -z "${SITE_SERVE_IN_TERM:-}" ] \
+   && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+  self="$HERE/$(basename "${BASH_SOURCE[0]}")"
+  export SITE_SERVE_IN_TERM=1
+  for term in ptyxis gnome-terminal kgx konsole x-terminal-emulator xterm; do
+    command -v "$term" >/dev/null || continue
+    case $term in
+      ptyxis)         exec ptyxis --new-window -x "$(printf '%q ' bash "$self" "$@")" ;;
+      gnome-terminal) exec gnome-terminal --wait -- bash "$self" "$@" ;;
+      kgx)            exec kgx -- bash "$self" "$@" ;;
+      *)              exec "$term" -e bash "$self" "$@" ;;
+    esac
+  done
+  unset SITE_SERVE_IN_TERM   # no terminal found: run anyway and report with a notification
+fi
+
 ok()   { printf '  \033[32m✔\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✘\033[0m %s\n' "$*"; }
@@ -190,10 +208,39 @@ cmd_start() {
   check_https
 }
 
-case "${1:-start}" in
+# One-line answer per part, read fresh after the action, shown last and as a notification.
+summary() {
+  local ts sv srv lnk url state
+  url="$(ts_url)"
+  state="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["BackendState"])' 2>/dev/null)"
+  [ "$state" = "Running" ] && ts="ON" || ts="OFF (${state:-not reachable})"
+  tailscale serve status --json 2>/dev/null | grep -q "\"Proxy\": \"http://127.0.0.1:$PORT\"" && sv="ON → :$PORT" || sv="OFF"
+  if ping_local; then srv="RUNNING (PID $(port_pid))"; elif [ -n "$(port_pid)$(app_pids)" ]; then srv="STUCK"; else srv="STOPPED"; fi
+  [ -n "$url" ] && curl -s -m 8 "$url/api/ping" 2>/dev/null | grep -q '"ok": true' && lnk="OK" || lnk="NOT WORKING"
+  head_ "════════ Summary ════════"
+  printf '  %-16s %s\n' "Tailscale:" "$ts" "tailscale serve:" "$sv" "server.py:" "$srv" "Link:" "$lnk  ${url:-}"
+  SUMMARY="Tailscale: $ts
+server.py: $srv
+Link: $lnk ${url:-}"
+  [ "$ts" = "ON" ] && [ "$lnk" = "OK" ]
+}
+
+action="${1:-start}"
+case "$action" in
   status)  cmd_status ;;
   start)   cmd_start ;;
   stop)    head_ "server.py"; stop_server ;;
   restart) head_ "server.py"; stop_server; cmd_start ;;
   *) echo "usage: $0 [status|start|stop|restart]"; exit 2 ;;
 esac
+summary; rc=$?
+
+# Started from the GUI: also pop up a desktop notification, and keep the window open.
+if [ -n "${SITE_SERVE_IN_TERM:-}" ] || { [ ! -t 1 ] && [ -z "${SITE_SERVE_NO_TERM:-}" ]; }; then
+  command -v notify-send >/dev/null && notify-send -i "$([ $rc = 0 ] && echo network-transmit-receive || echo dialog-warning)" \
+    "Site Survey ($action)" "$SUMMARY" 2>/dev/null
+fi
+if [ -n "${SITE_SERVE_IN_TERM:-}" ]; then
+  echo; read -rp "Press Enter to close… " _
+fi
+exit $rc
