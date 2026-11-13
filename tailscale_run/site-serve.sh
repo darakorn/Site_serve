@@ -6,6 +6,10 @@
 #   ./site-serve.sh start      check, clear a stuck server.py, start it if it is not running
 #   ./site-serve.sh stop       stop server.py
 #   ./site-serve.sh restart    stop, then start
+#   ./site-serve.sh watch      live status + recent requests, refreshed every 5 s ([q] to close)
+#
+# Double-clicked in the file manager it opens a terminal window, runs "start", then stays
+# on the live "watch" screen until you close it. server.py keeps running after that.
 #
 # server.py listens on 127.0.0.1:$PORT; `tailscale serve` publishes it as
 # https://<this machine>.<tailnet>.ts.net (tailnet only). Log: tailscale_run/server.log
@@ -168,9 +172,11 @@ stop_server() {
 
 start_server() {
   echo "  starting server.py  (log: $LOG)"
+  echo "--- started $(date '+%Y-%m-%d %H:%M:%S')" >>"$LOG"
   cd "$APP_DIR" || return 1
   # Started directly (no wrapper shell), so the PID is python's and no stdout pipe stays open.
-  nohup python3 server.py --port "$PORT" </dev/null >>"$LOG" 2>&1 &
+  # setsid: its own session, so closing the terminal window does not take the server down.
+  setsid nohup python3 server.py --port "$PORT" </dev/null >>"$LOG" 2>&1 &
   echo $! >"$PIDFILE"
   disown 2>/dev/null
   cd - >/dev/null || true
@@ -225,22 +231,52 @@ Link: $lnk ${url:-}"
   [ "$ts" = "ON" ] && [ "$lnk" = "OK" ]
 }
 
+# Live screen: stays open until [q] or the window is closed. The server is not touched on exit.
+cmd_watch() {
+  local out key
+  while true; do
+    out="$(summary 2>&1)"
+    clear
+    printf '\033[1mSite Survey — live status\033[0m   %s   (refreshes every 5 s)\n' "$(date '+%H:%M:%S')"
+    echo "$out"
+    head_ "Recent requests (phones opening the app / uploading)"
+    if [ -s "$LOG" ]; then
+      grep -v 'api/ping' "$LOG" | tail -n 12 | sed 's/^/  /'
+    else
+      echo "  (no log yet)"
+    fi
+    echo
+    echo "  Closing this window does NOT stop the server."
+    printf '  \033[1m[q]\033[0m close   \033[1m[r]\033[0m restart server   \033[1m[s]\033[0m stop server   \033[1m[u]\033[0m start server\n'
+    key=""
+    read -rsn1 -t 5 key
+    case "$key" in
+      q|Q) echo; break ;;
+      r|R) clear; head_ "server.py"; stop_server; start_server; sleep 1 ;;
+      s|S) clear; head_ "server.py"; stop_server; sleep 1 ;;
+      u|U) clear; cmd_start; sleep 1 ;;
+    esac
+  done
+}
+
 action="${1:-start}"
+if [ "$action" = watch ]; then cmd_watch; exit 0; fi
 case "$action" in
   status)  cmd_status ;;
   start)   cmd_start ;;
   stop)    head_ "server.py"; stop_server ;;
   restart) head_ "server.py"; stop_server; cmd_start ;;
-  *) echo "usage: $0 [status|start|stop|restart]"; exit 2 ;;
+  *) echo "usage: $0 [status|start|stop|restart|watch]"; exit 2 ;;
 esac
 summary; rc=$?
 
-# Started from the GUI: also pop up a desktop notification, and keep the window open.
+# Started from the GUI: also pop up a desktop notification, then stay on the live screen.
 if [ -n "${SITE_SERVE_IN_TERM:-}" ] || { [ ! -t 1 ] && [ -z "${SITE_SERVE_NO_TERM:-}" ]; }; then
   command -v notify-send >/dev/null && notify-send -i "$([ $rc = 0 ] && echo network-transmit-receive || echo dialog-warning)" \
     "Site Survey ($action)" "$SUMMARY" 2>/dev/null
 fi
 if [ -n "${SITE_SERVE_IN_TERM:-}" ]; then
-  echo; read -rp "Press Enter to close… " _
+  echo; read -rsn1 -t 4 -p "  Live status starts in a moment (any key to go now)…" _
+  cmd_watch
 fi
 exit $rc
